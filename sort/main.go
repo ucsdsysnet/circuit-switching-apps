@@ -120,8 +120,6 @@ func main() {
 		sorteeHost := getDestinationHost(toSend[i], len(ipMap))
 		if sorteeHost == indexMap[hostname] {
 			//Don't send the data it belongs to you!
-			//log.Printf("sorteeHost %d", sorteeHost)
-			//log.Printf("%d goes to me!", toSend[i])
 			toSort = append(toSort, toSend[i])
 		} else {
 			ints[sorteeHost] = append(ints[sorteeHost], toSend[i])
@@ -155,9 +153,6 @@ func main() {
 			}
 		}
 		remoteBufCount[seg.index] += seg.n
-		//Sort your own stuff
-		//Write own stuff to file
-		//fmt.Printf("Keep On keeping On with %s", hostname)
 		time.Sleep(time.Second)
 	}
 
@@ -298,12 +293,6 @@ func ListenRoutine(readDone chan Segment, remoteHostIndex int, hostname string, 
 		if err != nil {
 			readDone <- Segment{offset: -1, n: -1, index: remoteHostIndex}
 			break
-			/*
-				if detectTCPClose(conn) {
-					break
-				} else {
-					continue
-				}*/
 		}
 		total += int64(n)
 
@@ -329,10 +318,6 @@ func WriteRoutine(writeTo chan Segment, conn net.Conn) {
 	defer conn.Close()
 	for {
 		seg := <-writeTo
-		//log.Println(seg)
-		//fileData := readInFile(transferFilename)
-		//fmt.Printf("Preparing to Send %s total bytes%d \n", wbufs[seg.index][seg.offset:seg.n], seg.n)
 		conn.Write(wbufs[seg.index][seg.offset:seg.n])
-		//Sleep (5)
 	}
 }
