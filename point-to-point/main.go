@@ -23,7 +23,7 @@ var transferFilename = "/home/stew/data/medium-nothing.dat"
 
 const RTT = 5
 const BUFSIZE = 1024 * 1024 * 5
-const INTEGERS = 10000
+const INTEGERS = 10000000
 
 const MaxUint = ^uint(0)
 const MinUint = 0
