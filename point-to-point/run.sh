@@ -8,4 +8,4 @@ for i in $(cat < hosts.txt); do
   ssh $hostname $1 &
 done
 
-sleep 30
+sleep 9999

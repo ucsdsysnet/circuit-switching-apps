@@ -17,6 +17,12 @@ import (
 	"time"
 )
 
+var (
+	//Configuration parameters
+	WriteOutputToFile = true
+	ConnectToPeers    = false
+)
+
 //command line usage
 var usage = "main.go hostname hosts.txt"
 
@@ -27,7 +33,10 @@ var transferFilename = "/home/stew/data/medium-nothing.dat"
 const BUFSIZE = 1024 * 1024 * 5
 
 //The total number of integers to generate and sort per node
-const INTEGERS = 10000000
+const INTEGERS = 100000000
+const SIZEOFINT = 4
+const SORTBUFSIZE = 1024 * 10
+const SORTTHREADS = 64
 
 //Constants for determining the largest integer value, used to ((aproximatly)) evenly hash integer values across hosts)
 const MaxUint = ^uint(0)
@@ -58,13 +67,13 @@ var wbufs [][]byte
 var ints [][]int
 
 //base port all others are offset from this by hostid * hosts + hostid
-var basePort = 9020
+var basePort = 9030
 
 //All generated integers, some will be sent, some are sorted locally
-var toSend = make([]int, 0)
+var toSend = make([]int, INTEGERS)
 
 //To sort are the integers which will be sorted locally. Remote values for this node are eventually placed into toSort
-var toSort = make([]int, 0)
+var toSort = make([]int, INTEGERS)
 
 func main() {
 	//Remove filename from arguments
@@ -97,64 +106,97 @@ func main() {
 		ints[i] = make([]int, 0)
 	}
 
-	//Launch TCP listening threads for each other host (one way tcp for ease)
-	readDone := make(chan Segment, len(ipMap)-1)
-	for remoteHost, remoteIndex := range indexMap {
-		//Don't connect with yourself silly!
-		if indexMap[hostname] == indexMap[remoteHost] {
-			continue
-		}
-		go ListenRoutine(readDone, remoteIndex, hostname, ipMap, indexMap, ports)
-	}
-
-	//Sleep so that all conections get established TODO if a single host does
-	//not wake up the sort breaks: develop an init protocol for safety
-	log.Printf("[%s] Sleeping for a moment to wait for other hosts to wake up", hostname)
-	time.Sleep(time.Second * 5)
-
-	//Alloc an array of outgoing channels to write to other hosts.
 	writeTo := make([]chan Segment, len(ipMap))
-	for i := 0; i < len(ipMap); i++ {
-		writeTo[i] = make(chan Segment, 1)
-	}
-
-	thisHostId := indexMap[hostname]
-	for remoteHost, remoteAddr := range ipMap {
-		//Don't connect with yourself you have your integers!
-		if indexMap[hostname] == indexMap[remoteHost] {
-			continue
+	readDone := make(chan Segment, len(ipMap)-1)
+	if ConnectToPeers {
+		//Launch TCP listening threads for each other host (one way tcp for ease)
+		for remoteHost, remoteIndex := range indexMap {
+			//Don't connect with yourself silly!
+			if indexMap[hostname] == indexMap[remoteHost] {
+				continue
+			}
+			go ListenRoutine(readDone, remoteIndex, hostname, ipMap, indexMap, ports)
 		}
-		remoteHostIndex := indexMap[remoteHost]
-		remotePort := ports[thisHostId][remoteHostIndex] + basePort
-		conn, err := net.Dial("tcp4", fmt.Sprintf("%s:%d", remoteAddr, remotePort))
-		if err != nil {
-			log.Fatalf("Unable to connect to remote host %s on port %d : Error %s", remoteHost, remotePort, err)
-		}
-		log.Printf("Preparing Write Channnel to Host %s, on port %d", remoteHost, remotePort)
-		//Launch writing thread
-		go WriteRoutine(writeTo[remoteHostIndex], conn)
 
+		//Sleep so that all conections get established TODO if a single host does
+		//not wake up the sort breaks: develop an init protocol for safety
+		log.Printf("[%s] Sleeping for a moment to wait for other hosts to wake up", hostname)
+		time.Sleep(time.Second * 5)
+
+		//Alloc an array of outgoing channels to write to other hosts.
+		for i := 0; i < len(ipMap); i++ {
+			writeTo[i] = make(chan Segment, 1)
+		}
+
+		thisHostId := indexMap[hostname]
+		for remoteHost, remoteAddr := range ipMap {
+			//Don't connect with yourself you have your integers!
+			if indexMap[hostname] == indexMap[remoteHost] {
+				continue
+			}
+			remoteHostIndex := indexMap[remoteHost]
+			remotePort := ports[thisHostId][remoteHostIndex] + basePort
+			conn, err := net.Dial("tcp4", fmt.Sprintf("%s:%d", remoteAddr, remotePort))
+			if err != nil {
+				log.Fatalf("Unable to connect to remote host %s on port %d : Error %s", remoteHost, remotePort, err)
+			}
+			log.Printf("Preparing Write Channnel to Host %s, on port %d", remoteHost, remotePort)
+			//Launch writing thread
+			go WriteRoutine(writeTo[remoteHostIndex], conn)
+
+		}
 	}
 
 	//generate random integers for sorting
+	fmt.Printf("Generating %s bytes of data for sorting\n", totaldata())
 	rand.Seed(int64(time.Now().Nanosecond()))
+	dataGenTime := time.Now()
 	for i := 0; i < INTEGERS; i++ {
 		rvar := rand.Int()
-		toSend = append(toSend, rvar)
+		toSend[i] = rvar
+	}
+	dataGenTimeTotal := time.Now().Sub(dataGenTime)
+	fmt.Printf("Done Generating DataSet in %0.3f seconds rate = %0.3fMB/s\n",
+		dataGenTimeTotal.Seconds(),
+		float64(totaldataVal())/dataGenTimeTotal.Seconds())
+
+	//Inject a function here which subdivides the input and puts it into buffers for each of the respective receving hosts.
+	//Alloc channels for threads to communicate back to the main thread of execution
+	totalHosts := len(ipMap)
+	done := make(chan bool, totalHosts)
+
+	for i := 0; i < SORTTHREADS; i++ {
+		chunksize := (len(toSend) / SORTTHREADS)
+		min := i * chunksize
+		max := (i + 1) * chunksize
+		log.Printf("Base %d, Range %d Size %d Total%d\n", min, max, chunksize, len(toSend))
+		buf := make([][]int, totalHosts)
+		for i := range buf {
+			buf[i] = make([]int, SORTBUFSIZE)
+		}
+		index := make([]int, MAXHOSTS)
+		go shuffler(toSort[min:max], buf, index, totalHosts, i, done)
+	}
+	//HASHING CODE
+	fmt.Printf("Passing over %s of data to hash to hosts\n", totaldata())
+	time.Sleep(time.Second)
+	dataHashTime := time.Now()
+	//Determine which integers are going where
+	for i := 0; i < SORTTHREADS; i++ {
+		done <- true
+	}
+	for i := 0; i < SORTTHREADS; i++ {
+		log.Printf("Finished chunking on %d threads", i)
+		<-done
 	}
 
-	//Determine which integers are going where
-	for i := range toSend {
-		//getDestination is a general hasing function that places integers on a ring, and maps them to hosts
-		sorteeHost := getDestinationHost(toSend[i], len(ipMap))
-		if sorteeHost == indexMap[hostname] {
-			//Don't send the data it belongs to you!
-			toSort = append(toSort, toSend[i])
-		} else {
-			//bucket integers to the host they belong on
-			ints[sorteeHost] = append(ints[sorteeHost], toSend[i])
-		}
-	}
+	dataHashTimeTotal := time.Now().Sub(dataHashTime)
+	log.Printf("Done Hashing Data across hosts in %0.3f seconds rate = %0.3fMB/s\n",
+		dataHashTimeTotal.Seconds(),
+		float64(totaldataVal())/dataHashTimeTotal.Seconds())
+	log.Println("Returning!")
+	return
+	//\HASHING CODE
 
 	//Broadcast The unsorted contents of an array of integers to other nodes
 	for i := range ints {
@@ -215,18 +257,66 @@ func main() {
 	//Call the standard library sort and sort everything
 	sort.Ints(toSort)
 
+	if WriteOutputToFile {
+		writeOutputToFile(toSort, indexMap[hostname])
+	}
+
+	log.Println("Sort Complete!!!")
+	return
+}
+
+const MAXHOSTS = 15
+
+//Hash function for determining which integers will be sorted by which hosts.
+//This one evenly spaces hosts across the space of integers. TODO to get an
+//even spread use a second layer of virtual nodes around the ring. (take a look
+//at the dynamo paper
+//[https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf])
+func getDestinationHost(value int, hosts int) int {
+	dHost := value / ((MaxInt) / hosts)
+	return dHost
+}
+
+func shuffler(data []int, outputBuffers [][]int, hostIndex []int, hosts int, threadIndex int, done chan bool) {
+	/*
+		var (
+			outputBuffers [MAXHOSTS][SORTBUFSIZE]int
+			hostIndexs    [MAXHOSTS]int
+		)
+	*/
+	var sorteeHost int
+	var bufIndex int
+	<-done
+	/*
+		outputBuffers := make([][]int, hosts)
+		hostIndexs := make([]int, hosts)
+		for i := range outputBuffers {
+			outputBuffers[i] = make([]int, SORTBUFSIZE)
+			hostIndexs[i] = 0
+		}
+	*/
+	quant := (MaxInt / hosts)
+	for i := 0; i < len(data); i++ {
+		//sorteeHost = data[i] / ((MaxInt) / hosts)
+		sorteeHost = data[i] / quant
+		bufIndex = hostIndex[sorteeHost] % SORTBUFSIZE
+		outputBuffers[sorteeHost][bufIndex] = data[i]
+		hostIndex[sorteeHost]++
+	}
+
+	done <- true
+}
+
+func writeOutputToFile(sorted []int, hostIndex int) {
 	//Write sorted integers out to a file corresponding to the range of sorted
 	//integers. These files can be concated for the full sort to be seen.
-	f, err := os.Create(fmt.Sprintf("%d.sorted", indexMap[hostname]))
+	f, err := os.Create(fmt.Sprintf("%d.sorted", hostIndex))
 	if err != nil {
 		log.Fatal("Unable to open output file %s : Error %s")
 	}
 	for i := range toSort {
 		f.WriteString(fmt.Sprintf("%d\n", toSort[i]))
 	}
-
-	log.Println("Sort Complete!!!")
-	return
 }
 
 func ListenRoutine(readDone chan Segment, remoteHostIndex int, hostname string, hostIpMap map[string]string, indexMap map[string]int, ports [][]int) {
@@ -289,16 +379,6 @@ func WriteRoutine(writeTo chan Segment, conn net.Conn) {
 		seg := <-writeTo
 		conn.Write(wbufs[seg.index][seg.offset:seg.n])
 	}
-}
-
-//Hash function for determining which integers will be sorted by which hosts.
-//This one evenly spaces hosts across the space of integers. TODO to get an
-//even spread use a second layer of virtual nodes around the ring. (take a look
-//at the dynamo paper
-//[https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf])
-func getDestinationHost(value int, hosts int) int {
-	dHost := value / ((MaxInt) / hosts)
-	return dHost
 }
 
 //count how many hosts are done
@@ -384,4 +464,14 @@ func detectTCPClose(c net.Conn) bool {
 		c.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
 		return false
 	}
+}
+
+//This is a convience function for printing the amount of data being sorted on a single host
+func totaldata() string {
+	return fmt.Sprintf("%dMB", totaldataVal())
+}
+
+//RETURN THE TOTAL AMMOUNT OF DATA IN MB
+func totaldataVal() int {
+	return (((INTEGERS * 32) / 1024) / 1024)
 }
