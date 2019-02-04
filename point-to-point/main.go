@@ -9,16 +9,17 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"sort"
+	//"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 )
 
 var (
 	//Configuration parameters
-	WriteOutputToFile = true
+	WriteOutputToFile = false
 	ConnectToPeers    = true
 )
 
@@ -29,14 +30,14 @@ var usage = "main.go hostname hosts.txt"
 var transferFilename = "/home/stew/data/medium-nothing.dat"
 
 //Size of byte buffers for reading and writing TODO this size should be larger for big sort sizes
-const BUFSIZE = 1024 * 1024 * 1000
+const BUFSIZE = 4096
 
 //The total number of integers to generate and sort per node
-const INTEGERS = 100000000
+const INTEGERS = 1000000000
 const SIZEOFINT = 4
-const SORTBUFSIZE = 1024 * 100
+const SORTBUFSIZE = 4096
 const SORTBUFBYTESIZE = SORTBUFSIZE * 4
-const SORTTHREADS = 1
+const SORTTHREADS = 4
 
 //Constants for determining the largest integer value, used to ((aproximatly)) evenly hash integer values across hosts)
 const MaxUint = ^uint64(0)
@@ -63,11 +64,13 @@ type FixedSegment struct {
 	n   int
 }
 
+var filelock sync.Mutex
+
 //read buffers one per host
 var rbufs [][]byte
 
 //base port all others are offset from this by hostid * hosts + hostid
-var basePort = 10110
+var basePort = 10650
 
 //All generated integers, some will be sent, some are sorted locally
 var toSend = make([]int, INTEGERS)
@@ -102,9 +105,9 @@ func main() {
 		rbufs[i] = make([]byte, BUFSIZE)
 	}
 
-	writeTo := make([]chan Segment, len(ipMap))
-	writeTo2 := make([]chan FixedSegment, len(ipMap))
+	writeTo := make([]chan FixedSegment, len(ipMap))
 	readDone := make(chan Segment, (len(ipMap) - 1))
+	writeDone := make([]chan bool, len(ipMap))
 	progressReading := make([]chan bool, len(ipMap))
 	if ConnectToPeers {
 		//Launch TCP listening threads for each other host (one way tcp for ease)
@@ -124,8 +127,8 @@ func main() {
 
 		//Alloc an array of outgoing channels to write to other hosts.
 		for i := 0; i < len(ipMap); i++ {
-			writeTo[i] = make(chan Segment, 1)
-			writeTo2[i] = make(chan FixedSegment, 0)
+			writeTo[i] = make(chan FixedSegment, 0)
+			writeDone[i] = make(chan bool, 0)
 		}
 
 		thisHostId := indexMap[hostname]
@@ -142,12 +145,12 @@ func main() {
 			}
 			log.Printf("Preparing Write Channnel to Host %s, on port %d", remoteHost, remotePort)
 			//Launch writing thread
-			go WriteRoutine2(writeTo2[remoteHostIndex], conn)
+			go WriteRoutine2(writeTo[remoteHostIndex], writeDone[remoteHostIndex], conn)
 		}
 	}
 
 	//generate random integers for sorting
-	//fmt.Printf("Generating %s bytes of data for sorting\n", totaldata())
+	log.Printf("Generating %s bytes of data for sorting\n", totaldata())
 	rand.Seed(int64(time.Now().Nanosecond()))
 	dataGenTime := time.Now()
 	for i := 0; i < INTEGERS; i++ {
@@ -170,7 +173,7 @@ func main() {
 			chunksize := (len(toSend) / SORTTHREADS)
 			min := i * chunksize
 			max := (i + 1) * chunksize
-			go shuffler(toSend[min:max], totalHosts, i, indexMap[hostname], done, writeTo2)
+			go shuffler(toSend[min:max], totalHosts, i, indexMap[hostname], done, writeTo, writeDone)
 		}
 		//HASHING CODE
 		//fmt.Printf("Passing over %s of data to hash to hosts\n", totaldata())
@@ -182,7 +185,6 @@ func main() {
 		}
 		log.Println("All Hashes Started")
 		for i := 0; i < SORTTHREADS; i++ {
-			//log.Printf("Finished chunking on %d threads", i)
 			<-done
 		}
 
@@ -206,9 +208,15 @@ func main() {
 	doneHosts := make([]bool, len(ipMap))
 
 	var total int64
+	started := false
 	readingTime := time.Now()
+	var seg Segment
 	for {
-		seg := <-readDone
+		if !started {
+			started = true
+			readingTime = time.Now()
+		}
+		seg = <-readDone
 		total += seg.n
 		//seg.n == -1 means a host is done sending
 		if seg.n == -1 {
@@ -218,7 +226,7 @@ func main() {
 			}
 		} else {
 			//log.Printf("Seg Index %d n %d", seg.index, seg.n)
-			toSortBytes = append(toSortBytes, rbufs[seg.index][:seg.n]...)
+			//toSortBytes = append(toSortBytes, rbufs[seg.index][:seg.n]...)
 			progressReading[seg.index] <- true
 			remoteBufCount[seg.index] += seg.n
 		}
@@ -247,7 +255,7 @@ func main() {
 
 	//Call the standard library sort and sort everything
 	log.Println("Starting Sort!!")
-	sort.Ints(toSort)
+	//sort.Ints(toSort)
 
 	if WriteOutputToFile {
 		writeOutputToFile(toSort, indexMap[hostname])
@@ -270,7 +278,7 @@ func getDestinationHost(value int, hosts int) int {
 }
 
 //func shuffler(data []int, outputBuffers [][]int, hostIndex []int, hosts int, threadIndex int, done chan bool) {
-func shuffler(data []int, hosts int, threadIndex int, myIndex int, done chan bool, writeTo []chan FixedSegment) {
+func shuffler(data []int, hosts int, threadIndex int, myIndex int, done chan bool, writeTo []chan FixedSegment, doneWrite []chan bool) {
 	var (
 		outputBuffers [MAXHOSTS][SORTBUFSIZE]int
 		hostIndex     [MAXHOSTS]int
@@ -300,13 +308,13 @@ func shuffler(data []int, hosts int, threadIndex int, myIndex int, done chan boo
 			//log.Printf("[%d/100]\n", (int((float32(i) / float32(len(data)) * 100.0))))
 			hostIndex[sorteeHost] = 0
 			if myIndex == sorteeHost {
-				toSort = append(toSort, outputBuffers[sorteeHost][:]...)
+				toSort = append(toSort, outputBuffers[sorteeHost][:SORTBUFSIZE]...)
 				continue
 			}
 			//log.Printf("Writing to %d sending", sorteeHost)
 			writeTo[sorteeHost] <- FixedSegment{buf: &outputBuffers[sorteeHost], n: SORTBUFSIZE}
 			//log.Printf("Writing waiting to send %d", sorteeHost)
-			<-writeTo[sorteeHost]
+			<-doneWrite[sorteeHost]
 			//log.Printf("Moving Forward %d ", sorteeHost)
 		}
 
@@ -314,15 +322,16 @@ func shuffler(data []int, hosts int, threadIndex int, myIndex int, done chan boo
 	for i := 0; i < hosts; i++ {
 		//log.Printf("hostIndex[%d]:%d -  ", i, hostIndex[i])
 		if myIndex == i {
-			toSort = append(toSort, outputBuffers[sorteeHost][:hostIndex[i]]...)
+			toSort = append(toSort, outputBuffers[i][:hostIndex[i]]...)
 			continue
 		}
 		//log.Println("Final Write")
 		writeTo[i] <- FixedSegment{buf: &outputBuffers[i], n: hostIndex[i]}
 		//log.Println("Waiting")
-		<-writeTo[sorteeHost]
+		<-doneWrite[i]
 		//log.Println("Finally Moving Forward")
 	}
+	//log.Printf("Returning from Shuffle Thread")
 
 	done <- true
 }
@@ -331,11 +340,12 @@ func shuffler(data []int, hosts int, threadIndex int, myIndex int, done chan boo
 //Each routine is pinned to a TCP connection. Upon reciving a segment on an
 //async channel this function writes a region of memory referenced by the
 //segment to indexed host.
-func WriteRoutine2(writeTo chan FixedSegment, conn net.Conn) {
+func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Conn) {
 
 	defer conn.Close()
 	for {
 		seg := <-writeTo
+		//log.Printf("Received Writing Segement of size %d", seg.n)
 		buf := (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(seg.buf))
 		_, err := conn.Write(buf[:seg.n])
 		if err != nil {
@@ -343,11 +353,16 @@ func WriteRoutine2(writeTo chan FixedSegment, conn net.Conn) {
 			log.Fatal(err)
 		}
 		//Just Return
-		writeTo <- seg
+
+		//log.Printf("Returning Control for seg of size %d", seg.n)
+		doneWriting <- true
 	}
 }
 
 func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex int, hostname string, hostIpMap map[string]string, indexMap map[string]int, ports [][]int) {
+
+	f, err := os.Create(fmt.Sprintf("%s-bw.dat", hostname))
+	defer f.Close()
 
 	//This part is special. In the future there should be a big block of mmapped memory for each of the listen routines
 	thisHostId := indexMap[hostname]
@@ -367,7 +382,8 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 	defer conn.Close()
 
 	var total int64
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	start := time.Now()
+	conn.SetReadDeadline(time.Now().Add(10000 * time.Second))
 	for {
 		//This is going to cause a bug TODO total will overflow rbufs
 		n, err := conn.Read(rbufs[remoteHostIndex])
@@ -381,6 +397,9 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 		if detectTCPClose(conn) {
 			break
 		}
+		filelock.Lock()
+		f.WriteString(fmt.Sprintf("%0.3f,%d\n", time.Now().Sub(start).Seconds(), total))
+		filelock.Unlock()
 		readDone <- Segment{offset: total, n: int64(n), index: remoteHostIndex}
 		<-progress
 	}
@@ -478,7 +497,7 @@ func detectTCPClose(c net.Conn) bool {
 		c = nil
 		return true
 	} else {
-		c.SetReadDeadline(time.Now().Add(1000 * time.Millisecond))
+		c.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return false
 	}
 }
