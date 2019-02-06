@@ -35,7 +35,7 @@ const BUFSIZE = 4096
 //The total number of integers to generate and sort per node
 const INTEGERS = 1000000000
 const SIZEOFINT = 4
-const SORTBUFSIZE = 4096
+const SORTBUFSIZE = 4096 * 100
 const SORTBUFBYTESIZE = SORTBUFSIZE * 4
 const SORTTHREADS = 4
 
@@ -70,7 +70,7 @@ var filelock sync.Mutex
 var rbufs [][]byte
 
 //base port all others are offset from this by hostid * hosts + hostid
-var basePort = 10650
+var basePort = 10660
 
 //All generated integers, some will be sent, some are sorted locally
 var toSend = make([]int, INTEGERS)
@@ -102,7 +102,7 @@ func main() {
 	rbufs = make([][]byte, len(ipMap))
 	for i := range rbufs {
 		//TODO be smart and exclude yourself from this buffer allocation: host i need no buffer for host i
-		rbufs[i] = make([]byte, BUFSIZE)
+		rbufs[i] = make([]byte, SORTBUFSIZE)
 	}
 
 	writeTo := make([]chan FixedSegment, len(ipMap))
@@ -207,35 +207,42 @@ func main() {
 	remoteBufCount := make([]int64, len(ipMap))
 	doneHosts := make([]bool, len(ipMap))
 
-	var total int64
-	started := false
-	readingTime := time.Now()
-	var seg Segment
-	for {
-		if !started {
-			started = true
-			readingTime = time.Now()
-		}
-		seg = <-readDone
-		total += seg.n
-		//seg.n == -1 means a host is done sending
-		if seg.n == -1 {
-			doneHosts[seg.index] = true
-			if checkdone(doneHosts) {
-				break
+	doneReading := make(chan bool, 1)
+	go func() {
+		var total int64
+		started := false
+		readingTime := time.Now()
+		var seg Segment
+		for {
+			if !started {
+				started = true
+				readingTime = time.Now()
 			}
-		} else {
+			seg = <-readDone
+			total += seg.n
+			//seg.n == -1 means a host is done sending
+			if seg.n == -1 {
+				doneHosts[seg.index] = true
+				if checkdone(doneHosts) {
+					doneReading <- true
+					break
+				}
+			}
 			//log.Printf("Seg Index %d n %d", seg.index, seg.n)
 			//toSortBytes = append(toSortBytes, rbufs[seg.index][:seg.n]...)
-			progressReading[seg.index] <- true
+			//progressReading[seg.index] <- true
 			remoteBufCount[seg.index] += seg.n
 		}
-	}
-	readingTimeTotal := time.Now().Sub(readingTime)
-	log.Printf("Done Reading data from other hosts in %0.3f seconds rate = %0.3fMB/s, total %dMB\n",
-		readingTimeTotal.Seconds(),
-		float64(((total*8)/(1000*1000)))/readingTimeTotal.Seconds(),
-		(total*8)/(1000*1000))
+		readingTimeTotal := time.Now().Sub(readingTime)
+		log.Printf("Done Reading data from other hosts in %0.3f seconds rate = %0.3fMB/s, total %dMB\n",
+			readingTimeTotal.Seconds(),
+			float64(((total*8)/(1000*1000)))/readingTimeTotal.Seconds(),
+			(total*8)/(1000*1000))
+	}()
+
+	log.Println("Waiting to finish read before continuing")
+	<-doneReading
+	log.Println("Reads done")
 
 	//decode via unsafe pointer
 	var bytestamp [SORTBUFBYTESIZE]byte
@@ -382,7 +389,7 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 	defer conn.Close()
 
 	var total int64
-	start := time.Now()
+	//start := time.Now()
 	conn.SetReadDeadline(time.Now().Add(10000 * time.Second))
 	for {
 		//This is going to cause a bug TODO total will overflow rbufs
@@ -397,11 +404,13 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 		if detectTCPClose(conn) {
 			break
 		}
-		filelock.Lock()
-		f.WriteString(fmt.Sprintf("%0.3f,%d\n", time.Now().Sub(start).Seconds(), total))
-		filelock.Unlock()
+		/*
+			filelock.Lock()
+			f.WriteString(fmt.Sprintf("%0.3f,%d\n", time.Now().Sub(start).Seconds(), total))
+			filelock.Unlock()
+		*/
 		readDone <- Segment{offset: total, n: int64(n), index: remoteHostIndex}
-		<-progress
+		//<-progress
 	}
 }
 

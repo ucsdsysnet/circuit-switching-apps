@@ -32,6 +32,7 @@ c=next(color)
 
 time = []
 data = []
+total = []
 
 # calculate 99th percentile
 for filename in sys.argv:
@@ -40,23 +41,24 @@ for filename in sys.argv:
         i=0
         for row in plots:
             if len(row) >= 2:
-                if float(row[0]) > 80:
-                    continue
                 time.append(float(row[0]))
-                data.append(int(row[1]))
+                data.append(float(row[1]))
+                total.append(int(row[2]))
         plt.plot(time, data, 'g-', label=filename , color=c)
+        plt.plot(time, total, 'g--', label="total GB transfered" , color=c, linewidth=5)
         c=next(color)
         time =[]
         data = []
+        total = []
         #plt.plot(dredtime, dredOutstanding, 'g-', label="D-Redundancy client Outstanding" , color='r')
         #plt.plot(dredtime, dredLevel, 'g--', label="D-Redundancy Level" , color='k')
 
 
 
-plt.title("Reading Bandwidth")
+plt.title("TCP Bandwidth, Reading and Writing")
 plt.legend()
 plt.xlabel("Seconds (S)")
-plt.ylabel("Total Bytes Recevied")
+plt.ylabel("Total MegaBit Recevied")
 plt.show()
 
 
