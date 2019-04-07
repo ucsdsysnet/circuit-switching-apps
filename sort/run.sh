@@ -5,8 +5,9 @@ IFS=$'\n'        # make newlines the only separator
 for i in $(cat < hosts.txt); do
   hostname=`echo $i | cut -d ' ' -f 1`
   echo $hostname
-  ssh $hostname $1 &
-  sleep 1
+  #TODO In the future set this with options
+  ssh $hostname "~/go/src/github.com/wantonsolutions/circuit-switch-apps/sort/run-sort.sh" &
+  #sleep 1
 done
 
 sleep 9999

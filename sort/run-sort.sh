@@ -1,6 +1,6 @@
 #!/bin/bash -x
 
-cd ~/point-to-point
+cd ~/go/src/github.com/wantonsolutions/circuit-switch-apps/sort
 pwd
 hostname=`hostname`
 ls
