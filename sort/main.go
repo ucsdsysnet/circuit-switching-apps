@@ -21,7 +21,7 @@ import (
 
 var (
 	//Configuration parameters
-	ActuallySort      = true
+	ActuallySort      = false
 	ConnectToPeers    = true
 	WriteOutputToFile = true
 	AsyncWrite        = true
@@ -53,7 +53,6 @@ const MinUint = 0
 const MaxInt = int(MaxUint >> 1)
 const MinInt = -MaxInt - 1
 
-const KILLCODE = 123
 const KILLMSGSIZE = 1
 
 //SLEEPS
@@ -132,7 +131,6 @@ func main() {
 	writeTo := make([]chan FixedSegment, len(ipMap))
 	readDone := make(chan Segment, 64)
 	writeDone := make([]chan bool, len(ipMap))
-	progressReading := make([]chan bool, len(ipMap))
 	if ConnectToPeers {
 		//Launch TCP listening threads for each other host (one way tcp for ease)
 		for remoteHost, remoteIndex := range indexMap {
@@ -140,14 +138,8 @@ func main() {
 			if indexMap[hostname] == indexMap[remoteHost] {
 				continue
 			}
-			progressReading[indexMap[remoteHost]] = make(chan bool, 1)
-			go ListenRoutine(readDone, progressReading[indexMap[remoteHost]], remoteIndex, hostname, ipMap, indexMap, ports)
+			go ListenRoutine(readDone, remoteIndex, hostname, ipMap, indexMap, ports)
 		}
-
-		//Sleep so that all conections get established TODO if a single host
-		//does not wake up the sort breaks: develop an init protocol for safety
-		log.Printf("[%s] Sleeping for %ds to wait for other hosts to wake up", hostname, READWAKETIME)
-		time.Sleep(time.Second * READWAKETIME)
 
 		//Alloc an array of outgoing channels to write to other hosts.
 		for i := 0; i < len(ipMap); i++ {
@@ -155,7 +147,12 @@ func main() {
 			writeDone[i] = make(chan bool, 1)
 		}
 
+		//Sleep so that all conections get established TODO if a single host
+		//does not wake up the sort breaks: develop an init protocol for safety
+		log.Printf("[%s] Sleeping for %ds to wait for other hosts to wake up", hostname, READWAKETIME)
+		time.Sleep(time.Second * READWAKETIME)
 		thisHostId := indexMap[hostname]
+
 		for remoteHost, remoteAddr := range ipMap {
 			//Don't connect with yourself you have your integers!
 			if indexMap[hostname] == indexMap[remoteHost] {
@@ -179,6 +176,116 @@ func main() {
 	time.Sleep(time.Second * WRITEWAKETIME)
 
 	totalHosts := len(ipMap)
+
+	GenRandomController(totalHosts)
+
+	localSortedCounter := make([]int, SORTTHREADS)
+	log.Println("Started Shuffle")
+	go ShuffleController(totalHosts, &localSortedCounter, hostname, indexMap, writeTo, writeDone)
+
+	//\HASHING CODE
+
+	//Wait for transmission of other hosts to end, and count the number of
+	//bytes transmitted by othere hosts to perform a single decode operation
+
+	//TODO I'm not sure this is 100 percent safe, in some cases an error could
+	//occur, and the end transmission might be triggered (this is a pragmatic
+	//approach to get the sort done, just restart if there is a crash.
+
+	//Now each of the reads should be coppied back into a shared buffer, to begin lets use a new toSort
+	remoteBufCount := make([]int64, len(ipMap))
+	doneHosts := make([]bool, len(ipMap))
+	log.Println("Launching a read terminating thread")
+	var doneReading chan bool
+	doneReading = make(chan bool, 1)
+	var totalRead int
+	log.Println("Started Reading")
+	go asyncRead(doneReading, readDone, doneHosts, &toSort, remoteBufCount, &totalRead)
+
+	<-doneReading
+
+	//Merge local keys into one continuous chunk
+	var trueindex = 0
+	for i := 0; i < SORTTHREADS; i++ {
+		chunksize := (len(toSend) / SORTTHREADS)
+		min := i * chunksize
+		for j := 0; j < localSortedCounter[i]; j++ {
+			toSend[trueindex] = toSend[min+j]
+			trueindex++
+		}
+	}
+	//Copy locally stored integers into the sorting array
+	copy(toSort[totalRead:(totalRead+trueindex)], toSend[0:trueindex])
+
+	log.Println("Starting Sort!!")
+	if ActuallySort {
+		sort.Sort(DirRange(toSort))
+	}
+
+	if WriteOutputToFile {
+		writeOutputToFile(toSort, indexMap[hostname])
+	}
+
+	log.Println("Sort Complete!!!")
+	return
+}
+
+func asyncRead(readchan chan bool, readDone chan Segment, doneHosts []bool, toSort *[]uint64, remoteBufCount []int64, sortIndex *int) {
+	var total int64
+	var lencpy int
+	started := false
+	readingTime := time.Now()
+	var seg Segment
+	for {
+		if !started && total > 10000 {
+			started = true
+			readingTime = time.Now()
+		}
+		seg = <-readDone
+		total += seg.n
+		//seg.n == -1 means a host is done sending
+		if seg.n == -1 {
+			doneHosts[seg.index] = true
+			if checkdone(doneHosts) {
+				break
+			}
+		} else {
+			//Copy from network buffer directly into sorting array
+			lencpy = int(seg.n / BYTE2INT64CONVERSION)
+			copy((*toSort)[(*sortIndex):((*sortIndex)+lencpy)], *(*[]uint64)(unsafe.Pointer(&rbufs[seg.index])))
+			(*sortIndex) += lencpy
+			remoteBufCount[seg.index] += seg.n
+		}
+	}
+
+	readingTimeTotal := time.Now().Sub(readingTime)
+	log.Printf("Done Reading data from other hosts in %0.3f seconds rate = %0.3fMB/s, total %dMB\n",
+		readingTimeTotal.Seconds(),
+		float64(((total*8)/(1024*1024)))/readingTimeTotal.Seconds(),
+		(total*8)/(1024*1024))
+	readchan <- true
+
+}
+
+//Hash function for determining which integers will be sorted by which hosts.
+//This one evenly spaces hosts across the space of integers. TODO to get an
+//even spread use a second layer of virtual nodes around the ring. (take a look
+//at the dynamo paper
+//[https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf])
+func getDestinationHost(value uint64, hosts uint64) uint64 {
+	dHost := value / ((MaxUint) / hosts)
+	return dHost
+}
+
+func randomize(data []uint64, r *rand.Rand, start, stop chan bool) {
+	<-start
+	for i := range data {
+		data[i] = uint64(r.Int())
+	}
+	stop <- true
+}
+
+func GenRandomController(totalHosts int) {
 	log.Println("Total Hosts %d", totalHosts)
 	randStart := make(chan bool, totalHosts)
 	randStop := make(chan bool, totalHosts)
@@ -204,208 +311,25 @@ func main() {
 	log.Printf("Done Generating DataSet in %0.3f seconds rate = %0.3fMB/s\n",
 		dataGenTimeTotal.Seconds(),
 		float64(totaldataVal())/dataGenTimeTotal.Seconds())
-
-	localSortedCounter := make([]int, SORTTHREADS)
-
-	startShuffle := make(chan bool, totalHosts)
-	stopShuffle := make(chan bool, totalHosts)
-	go func() {
-		//Inject a function here which subdivides the input and puts it into buffers for each of the respective receving hosts.
-		//Alloc channels for threads to communicate back to the main thread of execution
-
-		for i := 0; i < SORTTHREADS; i++ {
-			chunksize := (len(toSend) / SORTTHREADS)
-			min := i * chunksize
-			max := (i + 1) * chunksize
-			go shuffler(toSend[min:max], &(localSortedCounter[i]), totalHosts, i, indexMap[hostname], startShuffle, stopShuffle, writeTo, writeDone)
-		}
-		//HASHING CODE
-		//fmt.Printf("Passing over %s of data to hash to hosts\n", totaldata())
-		//time.Sleep(time.Second)
-		dataHashTime := time.Now()
-		//Determine which integers are going where
-		for i := 0; i < SORTTHREADS; i++ {
-			startShuffle <- true
-		}
-		//time.Sleep(time.Second)
-		log.Println("All Hashes Started")
-		for i := 0; i < SORTTHREADS; i++ {
-			<-stopShuffle
-		}
-		log.Println("All Hashes Ended")
-
-		dataHashTimeTotal := time.Now().Sub(dataHashTime)
-		log.Printf("Done Hashing Data across hosts in %0.3f seconds rate = %0.3fMB/s\n",
-			dataHashTimeTotal.Seconds(),
-			float64(totaldataVal())/dataHashTimeTotal.Seconds())
-
-		//This is where we kill all of the readers.  We are going to use
-		//writeTo and write done in a single itteration similar to how we flush
-		//the buffer in the last itteration of write. This is done at the aggregate layer so individual thereads dont end connections.
-
-		var endbuf [SORTBUFSIZE]uint64
-		var hosts = totalHosts
-		endbuf[0] = KILLCODE
-		for i := 0; i < hosts; i++ {
-			if i == indexMap[hostname] {
-				continue
-			}
-			writeTo[i] <- FixedSegment{buf: &endbuf, n: KILLMSGSIZE}
-			//log.Println("KILLING")
-		}
-		for i := 0; i < hosts-1; i++ {
-			<-writeDone[i]
-			//log.Println("Finally Moving Forward FINAL!")
-		}
-
-		//End Kill Code
-
-	}()
-	//\HASHING CODE
-
-	//Wait for transmission of other hosts to end, and count the number of
-	//bytes transmitted by othere hosts to perform a single decode operation
-
-	//TODO I'm not sure this is 100 percent safe, in some cases an error could
-	//occur, and the end transmission might be triggered (this is a pragmatic
-	//approach to get the sort done, just restart if there is a crash.
-
-	//Now each of the reads should be coppied back into a shared buffer, to begin lets use a new toSort
-	remoteBufCount := make([]int64, len(ipMap))
-	doneHosts := make([]bool, len(ipMap))
-	log.Println("Launching a read terminating thread")
-	var doneReading chan bool
-	doneReading = make(chan bool, 1)
-	var totalRead int
-	go asyncRead(doneReading, readDone, doneHosts, &toSort, remoteBufCount, &totalRead)
-
-	log.Println("Waiting to finish read before continuing")
-	<-doneReading
-	log.Println("Reads done")
-
-	//decode via unsafe pointer
-	log.Println("Beginning APPEND!")
-
-	for i := range localSortedCounter {
-		log.Printf("Number of local values for thread %d =%d\n", i, localSortedCounter[i])
-	}
-
-	//This part consolodates locally sorted integers into the original data array
-	var trueindex = 0
-	for i := 0; i < SORTTHREADS; i++ {
-		chunksize := (len(toSend) / SORTTHREADS)
-		min := i * chunksize
-		for j := 0; j < localSortedCounter[i]; j++ {
-			toSend[trueindex] = toSend[min+j]
-			trueindex++
-		}
-	}
-	//log.Printf("inplace sorted array %s\n", toSend[0:trueindex])
-	//TODO remove appends
-
-	/*
-		var bytestamp [SORTBUFBYTESIZE]byte
-		var i int
-		for i = 0; i < len(toSortBytes); i++ {
-			if i%SORTBUFBYTESIZE == 0 && i > 0 {
-				intstamp := (*[SORTBUFSIZE]uint64)(unsafe.Pointer(&bytestamp))
-				toSort = append(toSort, (*intstamp)[:]...)
-			}
-			bytestamp[i%SORTBUFBYTESIZE] = toSortBytes[i]
-		}
-		intstamp := (*[SORTBUFSIZE]uint64)(unsafe.Pointer(&bytestamp))
-		toSort = append(toSort, (*intstamp)[:((i/BYTE2INT64CONVERSION)%SORTBUFSIZE)]...)
-	*/
-
-	//Save this for last :) TODO
-	copy(toSort[totalRead:(totalRead+trueindex)], toSend[0:trueindex])
-
-	//decode toSortBytes
-	//Stamping Structs
-
-	//Call the standard library sort and sort everything
-	log.Println("Starting Sort!!")
-	if ActuallySort {
-		sort.Sort(DirRange(toSort))
-	}
-
-	if WriteOutputToFile {
-		writeOutputToFile(toSort, indexMap[hostname])
-	}
-
-	log.Println("Sort Complete!!!")
-	return
 }
 
-//readDone := make(chan Segment, 64)
-func asyncRead(readchan chan bool, readDone chan Segment, doneHosts []bool, toSort *[]uint64, remoteBufCount []int64, sortIndex *int) {
-	var total int64
-	var lencpy int
-	started := false
-	readingTime := time.Now()
-	var seg Segment
-	for {
-		if !started && total > 10000 {
-			started = true
-			readingTime = time.Now()
-		}
-		seg = <-readDone
-		total += seg.n
-		//seg.n == -1 means a host is done sending
-		if seg.n == -1 {
-			doneHosts[seg.index] = true
-			if checkdone(doneHosts) {
-				break
-			}
-		} else {
+/* The shuffler method distributes key across hosts. values from the data array
+* are spread evenly across hosts. Values destened for remote hosts are placed
+* into buffers, when the buffers are full they are written to the related host.
+* Values which are to be sorted locally are written back into the data array at
+* the beginning
 
-			//copy(toSort[sortIndex:(seg.n/BYTE2INT64CONVERSION)], *(*[]uint64)(unsafe.Pointer(&rbufs[seg.index][:seg.n])))
-			lencpy = int(seg.n / BYTE2INT64CONVERSION)
-			/*
-				for i := sortIndex; i < sortIndex+lencpy+50; i++ {
-					log.Printf("index %d - val %d", i, (*toSort)[i])
-				}
-				log.Printf("Len ToSort = %d, Index %d, size %d", len(*toSort), sortIndex, lencpy)
-				log.Println(len(*toSort))
-				log.Println((*toSort)[sortIndex:(sortIndex + lencpy)])
-			*/
-			copy((*toSort)[(*sortIndex):((*sortIndex)+lencpy)], *(*[]uint64)(unsafe.Pointer(&rbufs[seg.index])))
-			(*sortIndex) += lencpy
+data - The input data being sorted
+localSortIndexRef - the number of values which are stored locally, this value is returned so that local values can be extracted
+hosts - the total number of host in the system
+threadIndex- shufflers are usually goroutines, this is the id of the goroutine
+myIndex - global host index, used to determine which values are local
+start - channel used to signal the start of a computation
+stop - channel used to signal the stop of a computation
+writeTo - Segment channel used to communicate to network writing threads
+doneWrite - Used to signal that a write is complete (may compromise safty when async is turned on
 
-			//toSortBytes = append(toSortBytes, rbufs[seg.index][:seg.n]...)
-			//progressReading[seg.index] <- true
-			remoteBufCount[seg.index] += seg.n
-		}
-	}
-	readingTimeTotal := time.Now().Sub(readingTime)
-	log.Printf("Done Reading data from other hosts in %0.3f seconds rate = %0.3fMB/s, total %dMB\n",
-		readingTimeTotal.Seconds(),
-		float64(((total*8)/(1024*1024)))/readingTimeTotal.Seconds(),
-		(total*8)/(1024*1024))
-	readchan <- true
-
-}
-
-//Hash function for determining which integers will be sorted by which hosts.
-//This one evenly spaces hosts across the space of integers. TODO to get an
-//even spread use a second layer of virtual nodes around the ring. (take a look
-//at the dynamo paper
-//[https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf])
-func getDestinationHost(value uint64, hosts uint64) uint64 {
-	dHost := value / ((MaxUint) / hosts)
-	return dHost
-}
-
-func randomize(data []uint64, r *rand.Rand, start, stop chan bool) {
-	<-start
-	for i := range data {
-		data[i] = uint64(r.Int())
-		//data[i] = uint64(i) + 8000000000000000000
-	}
-	stop <- true
-}
-
-//func shuffler(data []int, outputBuffers [][]int, hostIndex []int, hosts int, threadIndex int, done chan bool) {
+*/
 func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int, myIndex int, start, stop chan bool, writeTo []chan FixedSegment, doneWrite []chan bool) {
 	var (
 		outputBuffers [MAXHOSTS][SORTBUFSIZE]uint64
@@ -414,15 +338,6 @@ func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int,
 	var sorteeHost int
 	var bufIndex int
 	<-start
-	/*
-		outputBuffers := make([][]int, hosts)
-		hostIndexs := make([]int, hosts)
-		log.Println("Total Hosts %d",totalHosts)
-		for i := range outputBuffers {
-			outputBuffers[i] = make([]int, SORTBUFSIZE)
-			hostIndexs[i] = 0
-		}
-	*/
 
 	//The next step forward is to keep all local data in the same buffer. To do
 	//this data in the input buffer should be overwritten with local data
@@ -434,57 +349,80 @@ func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int,
 
 	quant := uint64((MaxInt / hosts))
 	for i := 0; i < len(data); i++ {
-		//sorteeHost = data[i] / ((MaxInt) / hosts)
+
+		//Sortee host is the destination of this value
 		sorteeHost = int(data[i] / quant)
 
-		//Prevent the need to alloc more data for local sorting by overwriting input buffer
+		//if local write back to the beginning of the data array to save memory
 		if myIndex == sorteeHost {
 			data[localSortIndex] = data[i]
 			localSortIndex++
 		} else {
-			//log.Println("Sortee Host for %d is %d", data[i], sorteeHost)
 			bufIndex = hostIndex[sorteeHost]
 			outputBuffers[sorteeHost][bufIndex] = data[i]
 			hostIndex[sorteeHost]++
-			//SlowSend
+			//Buffer full time to send
 			if hostIndex[sorteeHost] == SORTBUFSIZE {
-				//log.Printf("[%d/100]\n", (int((float32(i) / float32(len(data)) * 100.0))))
 				hostIndex[sorteeHost] = 0
-				//log.Printf("Writing to %d sending", sorteeHost)
 				writeTo[sorteeHost] <- FixedSegment{buf: &outputBuffers[sorteeHost], n: SORTBUFSIZE}
-				//log.Printf("Writing waiting to send %d", sorteeHost)
+				//Don't wait for the write to complete if in asyc mode
+				//TODO may be unsafe. It's proably better to have some sort of global buffer pool
 				if !AsyncWrite {
 					<-doneWrite[sorteeHost]
 				}
 			}
 		}
-
 	}
-	//log.Printf("Returning from Shuffle Thread")
-	//log.Printf("Locally stored indexes %d on host %d \n", localSortIndex, myIndex)
+	//Lock on shared structure to return the number of locally stored variables
 	toSortLock.Lock()
 	*localSortIndexRef = localSortIndex
 	toSortLock.Unlock()
+
 	//Drain remaining buffers
 	for i := 0; i < hosts; i++ {
 		if i == myIndex {
 			continue
 		}
 		writeTo[i] <- FixedSegment{buf: &outputBuffers[i], n: hostIndex[i]}
-		//log.Printf("Writing to %d sending %d Flush", i, hostIndex[i])
 		if !AsyncWrite {
 			<-doneWrite[i]
 		}
-		//log.Println("Finally Moving Forward 1")
 	}
-	//Don't wait for a message to be sent to yourself
-	/*
-		for i := 0; i < hosts-1; i++ {
-			<-doneWrite[i]
-			log.Println("Finally Moving Forward 2")
-		}*/
-
 	stop <- true
+}
+
+func ShuffleController(totalHosts int, localSortedCounter *[]int, hostname string, indexMap map[string]int, writeTo []chan FixedSegment, writeDone []chan bool) {
+	startShuffle := make(chan bool, totalHosts)
+	stopShuffle := make(chan bool, totalHosts)
+	//Inject a function here which subdivides the input and puts it into buffers for each of the respective receving hosts.
+	//Alloc channels for threads to communicate back to the main thread of execution
+
+	for i := 0; i < SORTTHREADS; i++ {
+		chunksize := (len(toSend) / SORTTHREADS)
+		min := i * chunksize
+		max := (i + 1) * chunksize
+		go shuffler(toSend[min:max], &((*localSortedCounter)[i]), totalHosts, i, indexMap[hostname], startShuffle, stopShuffle, writeTo, writeDone)
+	}
+	//HASHING CODE
+	//fmt.Printf("Passing over %s of data to hash to hosts\n", totaldata())
+	//time.Sleep(time.Second)
+	dataHashTime := time.Now()
+	//Determine which integers are going where
+	for i := 0; i < SORTTHREADS; i++ {
+		startShuffle <- true
+	}
+	//time.Sleep(time.Second)
+	log.Println("All Hashes Started")
+	for i := 0; i < SORTTHREADS; i++ {
+		<-stopShuffle
+	}
+	log.Println("All Hashes Ended")
+
+	dataHashTimeTotal := time.Now().Sub(dataHashTime)
+	log.Printf("Done Hashing Data across hosts in %0.3f seconds rate = %0.3fMB/s\n",
+		dataHashTimeTotal.Seconds(),
+		float64(totaldataVal())/dataHashTimeTotal.Seconds())
+
 }
 
 //Async write routine. Don't be fooled by the simplicity this is complicated.
@@ -492,36 +430,39 @@ func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int,
 //async channel this function writes a region of memory referenced by the
 //segment to indexed host.
 func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Conn) {
-
 	for {
 		seg := <-writeTo
-		//log.Printf("Received Writing Segement of size %d", seg.n)
 		buf := (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(seg.buf))
-		//log.Println(buf)
 		_, err := conn.Write(buf[:(seg.n * BYTE2INT64CONVERSION)])
 		if err != nil {
-			//log.Println(err)
-
 			log.Fatal(err)
 		}
-		//Just Return
-
-		//log.Printf("Returning Control for seg of size %d", seg.n)
 		if !AsyncWrite {
 			doneWriting <- true
 		}
 	}
 }
 
-func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex int, hostname string, hostIpMap map[string]string, indexMap map[string]int, ports [][]int) {
+/*Listen Routine performs all network reading between this host and a single
+other host over a TCP connection. This function starts a connection, waits
+for a connection to start and then begins reading. Data read from the network
+is sent via RBUFs back to the main application.
+
+readDone - Channel of Segments, sends data  back to main application, and signals when the computation is over
+remoteHostIndex - The remote host being read from
+hostname - this hosts hostname
+hostIpMap - maps hosts to IP used for connecting and debugging
+indexMap - relates hosts to their global index in the configuration file
+ports - port matrix, used to determine which port to listen on.
+*/
+
+func ListenRoutine(readDone chan Segment, remoteHostIndex int, hostname string, hostIpMap map[string]string, indexMap map[string]int, ports [][]int) {
 
 	var total int64
 	var n int
 	var err error
 
-	f, err := os.Create(fmt.Sprintf("%s-bw.dat", hostname))
-	defer f.Close()
-
+	//TODO for clenliness put this into its own function
 	//This part is special. In the future there should be a big block of mmapped memory for each of the listen routines
 	thisHostId := indexMap[hostname]
 	//reminder if a -> b than  b listens on ports [a][b]
@@ -537,23 +478,14 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 		log.Fatal(err)
 	}
 	fmt.Printf("Connection Accepted\n")
-	// TODO bring this back // defer conn.Close()
+	defer conn.Close()
 
 	//start := time.Now()
 	conn.SetReadDeadline(time.Now().Add(10000 * time.Second))
 	for {
-		//This is going to cause a bug TODO total will overflow rbufs
+
 		n, err = conn.Read(rbufs[remoteHostIndex])
 		total += int64(n)
-		//log.Printf("%s has received %d integers", hostname, total/8)
-		//check For a termination Condition
-
-		//The first termination condition is one where we have called for the execution of the program to end with a kill command
-
-		if n == 1 && rbufs[remoteHostIndex][0] == KILLCODE {
-			log.Printf("Received Kill Closing Connection with Host %d\n", remoteHostIndex)
-			//break
-		}
 
 		if detectTCPClose(conn) {
 			//continue
@@ -566,7 +498,6 @@ func ListenRoutine(readDone chan Segment, progress chan bool, remoteHostIndex in
 		}
 
 		readDone <- Segment{offset: total, n: int64(n), index: remoteHostIndex}
-		//<-progress
 	}
 	readDone <- Segment{offset: total, n: -1, index: remoteHostIndex}
 }
