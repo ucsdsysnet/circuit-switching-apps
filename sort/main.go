@@ -23,7 +23,7 @@ var (
 	//Configuration parameters
 	ActuallySort      = false
 	ConnectToPeers    = true
-	WriteOutputToFile = true
+	WriteOutputToFile = false
 	AsyncWrite        = true
 )
 
@@ -39,11 +39,13 @@ var transferFilename = "/home/stew/data/medium-nothing.dat"
 const BUFSIZE = 4096 * 32
 
 //The total number of integers to generate and sort per node
-const INTEGERS = 5000000000
+const ITEMS = 600000000
 const SORTBUFSIZE = 4096 * 64
 const BYTE2INT64CONVERSION = 8
 const SORTBUFBYTESIZE = SORTBUFSIZE * BYTE2INT64CONVERSION
 const SORTTHREADS = 8
+
+const RANDTHREADS = 24
 const MAXHOSTS = 15
 const BALLENCERATIO = 1.5
 
@@ -53,12 +55,33 @@ const MinUint = 0
 const MaxInt = int(MaxUint >> 1)
 const MinInt = -MaxInt - 1
 
+const MaxUint8 = ^uint8(0)
+const MinUint8 = 0
+const MaxInt8 = uint(MaxUint8 >> 1)
+
 const KILLMSGSIZE = 1
 
 //SLEEPS
 const READWAKETIME = 5
 const WRITEWAKETIME = 5
 const READTIMEOUT = 10
+
+const KEYSIZE = 10
+const VALUESIZE = 90
+const ITEMSIZE = KEYSIZE + VALUESIZE
+
+type Item struct {
+	Key   [KEYSIZE]byte
+	Value [VALUESIZE]byte
+}
+
+func (i *Item) Size() int {
+	return len(i.Key) + len(i.Value)
+}
+
+func (i *Item) String() string {
+	return fmt.Sprintf("Key[%X]:Value[%X]", i.Key, i.Value)
+}
 
 /* The segement type is used to index into buffers. Reads and Writes from
 * buffers are done using segments as a means to determing the offset and
@@ -75,7 +98,7 @@ type Segment struct {
 
 //----------///---------//
 type FixedSegment struct {
-	buf *[SORTBUFSIZE]uint64
+	buf *[SORTBUFSIZE]Item
 	n   int
 }
 
@@ -89,11 +112,11 @@ var rbufs [][]byte
 var basePort = 10940
 
 //All generated integers, some will be sent, some are sorted locally
-var toSend = make([]uint64, INTEGERS)
+var toSend = make([]Item, ITEMS)
 
 //To sort are the integers which will be sorted locally. Remote values for this
 //node are eventually placed into toSort
-var toSort = make([]uint64, INTEGERS*BALLENCERATIO)
+var toSort = make([]Item, ITEMS*BALLENCERATIO)
 
 func main() {
 	log.Println("STARTING V2")
@@ -230,7 +253,7 @@ func main() {
 	return
 }
 
-func asyncRead(readchan chan bool, readDone chan Segment, doneHosts []bool, toSort *[]uint64, remoteBufCount []int64, sortIndex *int) {
+func asyncRead(readchan chan bool, readDone chan Segment, doneHosts []bool, toSort *[]Item, remoteBufCount []int64, sortIndex *int) {
 	var total int64
 	var lencpy int
 	started := false
@@ -251,8 +274,8 @@ func asyncRead(readchan chan bool, readDone chan Segment, doneHosts []bool, toSo
 			}
 		} else {
 			//Copy from network buffer directly into sorting array
-			lencpy = int(seg.n / BYTE2INT64CONVERSION)
-			copy((*toSort)[(*sortIndex):((*sortIndex)+lencpy)], *(*[]uint64)(unsafe.Pointer(&rbufs[seg.index])))
+			lencpy = int(seg.n / ITEMSIZE)
+			copy((*toSort)[(*sortIndex):((*sortIndex)+lencpy)], *(*[]Item)(unsafe.Pointer(&rbufs[seg.index])))
 			(*sortIndex) += lencpy
 			remoteBufCount[seg.index] += seg.n
 		}
@@ -277,10 +300,12 @@ func getDestinationHost(value uint64, hosts uint64) uint64 {
 	return dHost
 }
 
-func randomize(data []uint64, r *rand.Rand, start, stop chan bool) {
+func randomize(data []Item, r *rand.Rand, start, stop chan bool) {
+	var datalen = len(data)
 	<-start
-	for i := range data {
-		data[i] = uint64(r.Int())
+	for i := 0; i < datalen; i++ {
+		r.Read(data[i].Key[:])
+		r.Read(data[i].Value[:])
 	}
 	stop <- true
 }
@@ -294,17 +319,17 @@ func GenRandomController(totalHosts int) {
 	log.Printf("Generating %s bytes of data for sorting\n", totaldata())
 	rand.Seed(int64(time.Now().Nanosecond()))
 	dataGenTime := time.Now()
-	for i := 0; i < SORTTHREADS; i++ {
-		chunksize := (len(toSend) / SORTTHREADS)
+	for i := 0; i < RANDTHREADS; i++ {
+		chunksize := (len(toSend) / RANDTHREADS)
 		min := i * chunksize
 		max := (i + 1) * chunksize
 		threadRand := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
 		go randomize(toSend[min:max], threadRand, randStart, randStop)
 	}
-	for i := 0; i < SORTTHREADS; i++ {
+	for i := 0; i < RANDTHREADS; i++ {
 		randStart <- true
 	}
-	for i := 0; i < SORTTHREADS; i++ {
+	for i := 0; i < RANDTHREADS; i++ {
 		<-randStop
 	}
 	dataGenTimeTotal := time.Now().Sub(dataGenTime)
@@ -330,9 +355,9 @@ writeTo - Segment channel used to communicate to network writing threads
 doneWrite - Used to signal that a write is complete (may compromise safty when async is turned on
 
 */
-func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int, myIndex int, start, stop chan bool, writeTo []chan FixedSegment, doneWrite []chan bool) {
+func shuffler(data []Item, localSortIndexRef *int, hosts int, threadIndex int, myIndex int, start, stop chan bool, writeTo []chan FixedSegment, doneWrite []chan bool) {
 	var (
-		outputBuffers [MAXHOSTS][SORTBUFSIZE]uint64
+		outputBuffers [MAXHOSTS][SORTBUFSIZE]Item
 		hostIndex     [MAXHOSTS]int
 	)
 	var sorteeHost int
@@ -346,12 +371,15 @@ func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int,
 	//1) Each thread write to it's own pre area of the shared data with a variable localSort index
 
 	var localSortIndex = 0
+	var datalen = len(data)
 
-	quant := uint64((MaxInt / hosts))
-	for i := 0; i < len(data); i++ {
+	//quant := uint64((MaxInt / hosts))
+	tmpquant := uint8(MaxUint8 / uint8(hosts))
+	for i := 0; i < datalen; i++ {
 
 		//Sortee host is the destination of this value
-		sorteeHost = int(data[i] / quant)
+		sorteeHost = int(uint8(data[i].Key[0]) / tmpquant)
+		//log.Printf("Sortee Host %d", sorteeHost)
 
 		//if local write back to the beginning of the data array to save memory
 		if myIndex == sorteeHost {
@@ -364,6 +392,7 @@ func shuffler(data []uint64, localSortIndexRef *int, hosts int, threadIndex int,
 			//Buffer full time to send
 			if hostIndex[sorteeHost] == SORTBUFSIZE {
 				hostIndex[sorteeHost] = 0
+				//TODO I'm getting an index out of range error right here, this would be a good place to start tomorrow.
 				writeTo[sorteeHost] <- FixedSegment{buf: &outputBuffers[sorteeHost], n: SORTBUFSIZE}
 				//Don't wait for the write to complete if in asyc mode
 				//TODO may be unsafe. It's proably better to have some sort of global buffer pool
@@ -432,8 +461,8 @@ func ShuffleController(totalHosts int, localSortedCounter *[]int, hostname strin
 func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Conn) {
 	for {
 		seg := <-writeTo
-		buf := (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(seg.buf))
-		_, err := conn.Write(buf[:(seg.n * BYTE2INT64CONVERSION)])
+		buf := (*[SORTBUFBYTESIZE * ITEMSIZE]byte)(unsafe.Pointer(seg.buf))
+		_, err := conn.Write(buf[:(seg.n * ITEMSIZE)])
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -502,7 +531,7 @@ func ListenRoutine(readDone chan Segment, remoteHostIndex int, hostname string, 
 	readDone <- Segment{offset: total, n: -1, index: remoteHostIndex}
 }
 
-func writeOutputToFile(sorted []uint64, hostIndex int) {
+func writeOutputToFile(sorted []Item, hostIndex int) {
 	//Write sorted integers out to a file corresponding to the range of sorted
 	//integers. These files can be concated for the full sort to be seen.
 	f, err := os.Create(fmt.Sprintf("%d.sorted", hostIndex))
@@ -510,7 +539,7 @@ func writeOutputToFile(sorted []uint64, hostIndex int) {
 		log.Fatal("Unable to open output file %s : Error %s")
 	}
 	for i := range toSort {
-		f.WriteString(fmt.Sprintf("%d\n", toSort[i]))
+		f.WriteString(toSort[i].String() + "\n")
 	}
 }
 
@@ -610,11 +639,18 @@ func totaldata() string {
 
 //RETURN THE TOTAL AMMOUNT OF DATA IN MB
 func totaldataVal() int {
-	return (INTEGERS * 8) / (1024 * 1024)
+	return (ITEMS * ITEMSIZE * 8) / (1024 * 1024)
 }
 
-type DirRange []uint64
+type DirRange []Item
 
-func (a DirRange) Len() int           { return len(a) }
-func (a DirRange) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a DirRange) Less(i, j int) bool { return a[i] < a[j] }
+func (a DirRange) Len() int      { return len(a) }
+func (a DirRange) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a DirRange) Less(i, j int) bool {
+	for k := range a[i].Key {
+		if uint8(a[i].Key[k]) < uint8(a[j].Key[k]) {
+			return true
+		}
+	}
+	return false
+}
