@@ -21,9 +21,9 @@ import (
 
 var (
 	//Configuration parameters
-	ActuallySort      = false
+	ActuallySort      = true
 	ConnectToPeers    = true
-	WriteOutputToFile = false
+	WriteOutputToFile = true
 	AsyncWrite        = true
 )
 
@@ -39,15 +39,15 @@ var transferFilename = "/home/stew/data/medium-nothing.dat"
 const BUFSIZE = 4096 * 32
 
 //The total number of integers to generate and sort per node
-const ITEMS = 600000000
-const SORTBUFSIZE = 4096 * 64
+const ITEMS = 500000000
+const SORTBUFSIZE = 4096 * 128
 const BYTE2INT64CONVERSION = 8
 const SORTBUFBYTESIZE = SORTBUFSIZE * BYTE2INT64CONVERSION
-const SORTTHREADS = 8
+const SORTTHREADS = 24
 
 const RANDTHREADS = 24
 const MAXHOSTS = 15
-const BALLENCERATIO = 1.5
+const BALLENCERATIO = 1.3
 
 //Constants for determining the largest integer value, used to ((aproximatly)) evenly hash integer values across hosts)
 const MaxUint = ^uint64(0)
@@ -122,8 +122,6 @@ func main() {
 	log.Println("STARTING V2")
 	flag.Parse()
 	//cpu profileing
-	profile.ProfilePath("./cpu.prof")
-	defer profile.Start().Stop()
 
 	//Remove filename from arguments
 	args := os.Args[1:]
@@ -202,6 +200,10 @@ func main() {
 
 	GenRandomController(totalHosts)
 
+	//Start the profile after generating the random data
+	defer profile.Start().Stop()
+	profile.ProfilePath("./cpu.prof")
+
 	localSortedCounter := make([]int, SORTTHREADS)
 	log.Println("Started Shuffle")
 	go ShuffleController(totalHosts, &localSortedCounter, hostname, indexMap, writeTo, writeDone)
@@ -237,6 +239,7 @@ func main() {
 			trueindex++
 		}
 	}
+	log.Printf("True Index %d, total Read %d", trueindex, totalRead)
 	//Copy locally stored integers into the sorting array
 	copy(toSort[totalRead:(totalRead+trueindex)], toSend[0:trueindex])
 
@@ -378,7 +381,8 @@ func shuffler(data []Item, localSortIndexRef *int, hosts int, threadIndex int, m
 	for i := 0; i < datalen; i++ {
 
 		//Sortee host is the destination of this value
-		sorteeHost = int(uint8(data[i].Key[0]) / tmpquant)
+		//TODO spread out keys on more
+		sorteeHost = int(uint8(data[i].Key[0])/tmpquant) % hosts
 		//log.Printf("Sortee Host %d", sorteeHost)
 
 		//if local write back to the beginning of the data array to save memory
@@ -461,8 +465,7 @@ func ShuffleController(totalHosts int, localSortedCounter *[]int, hostname strin
 func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Conn) {
 	for {
 		seg := <-writeTo
-		buf := (*[SORTBUFBYTESIZE * ITEMSIZE]byte)(unsafe.Pointer(seg.buf))
-		_, err := conn.Write(buf[:(seg.n * ITEMSIZE)])
+		_, err := conn.Write((*[SORTBUFBYTESIZE * ITEMSIZE]byte)(unsafe.Pointer(seg.buf))[:seg.n*ITEMSIZE])
 		if err != nil {
 			log.Fatal(err)
 		}
