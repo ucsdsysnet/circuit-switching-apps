@@ -10,4 +10,3 @@ for i in $(cat < hosts.txt); do
   #sleep 1
 done
 
-sleep 9999

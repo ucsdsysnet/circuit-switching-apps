@@ -60,6 +60,10 @@ color=iter(cm.rainbow(np.linspace(0,1,5*(len(sys.argv) + 1))))
 c=next(color)
 
 
+globalXLim = 205
+globalXMin = -5
+
+networkingYmax = 42
 ############################################################################
 #                       CPU
 ############################################################################
@@ -92,12 +96,12 @@ title="228Gb Sort 6 Hosts CPU utilization"
 xlegendanchor=0.50
 ylegendanchor=-0.40
 
-xlimleft = -5
-xlimright = 305
+xlimleft = globalXMin
+xlimright = globalXLim
 ylimlower = -3
 ylimupper = 100
 
-chartname="3host_228Gb_cpu.png"
+chartname="6host_228Gb_cpu.eps"
 
 # calculate 99th percentile
 for filename in sys.argv:
@@ -135,7 +139,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname)
+plt.savefig(chartname, format='eps')
 #plt.show()
 plt.clf()
 
@@ -155,14 +159,14 @@ title="228Gb Sort 6 Hosts Network Throughput TX Bytes"
 xlegendanchor=0.50
 ylegendanchor=-0.40
 
-xlimleft = -5
-xlimright = 305
+xlimleft = globalXMin
+xlimright = globalXLim
 ylimlower = -0.25
-ylimupper = 11
+ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_TX_Bytes.png"
+chartname="6host_228Gb_TX_Bytes.eps"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -180,7 +184,12 @@ for filename in sys.argv:
                 continue
             if len(row) >= 2:
                 time.append(get_sec(row[timeindex]))
-                data.append(float(row[sendkbytesindex]))
+                if row[sendkbytesindex] == "":
+                    data.append(0.0)
+                else:
+                    print(row[sendkbytesindex])
+                    data.append(float(row[sendkbytesindex]))
+
         ntime = normalizeTime(time)
         gbps = KbpsToGbps(data)
         i=i+1
@@ -199,7 +208,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname)
+plt.savefig(chartname, format='eps')
 
 #plt.show()
 
@@ -219,14 +228,14 @@ title="228Gb Sort 6 Hosts Network Throughput RX Bytes"
 xlegendanchor=0.50
 ylegendanchor=-0.40
 
-xlimleft = -5
-xlimright = 305
+xlimleft = globalXMin
+xlimright = globalXLim
 ylimlower = -0.25
-ylimupper = 11
+ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_RX_Bytes.png"
+chartname="6host_228Gb_RX_Bytes.eps"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -244,7 +253,12 @@ for filename in sys.argv:
                 continue
             if len(row) >= 2:
                 time.append(get_sec(row[timeindex]))
-                data.append(float(row[reckbytesindex]))
+                #data.append(float(row[reckbytesindex]))
+                if row[reckbytesindex] == "":
+                    data.append(0.0)
+                else:
+                    print(row[reckbytesindex])
+                    data.append(float(row[reckbytesindex]))
         ntime = normalizeTime(time)
         gbps = KbpsToGbps(data)
         i=i+1
@@ -263,7 +277,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname)
+plt.savefig(chartname, format='eps')
 
 #plt.show()
 plt.clf()
@@ -283,14 +297,14 @@ title="228Gb Sort 6 Hosts Network Memory Usage"
 xlegendanchor=0.50
 ylegendanchor=-0.40
 
-xlimleft = -5
-xlimright = 305
+xlimleft = globalXMin
+xlimright = globalXLim
 ylimlower = -0.25
 ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Memory_Usage.png"
+chartname="6host_228Gb_Memory_Usage.eps"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -326,9 +340,9 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname)
+plt.savefig(chartname, format='eps')
 
-plt.show()
+#plt.show()
 plt.clf()
 
 
@@ -347,14 +361,14 @@ title="228Gb Sort 6 Hosts Disk Utilization"
 xlegendanchor=0.50
 ylegendanchor=-0.40
 
-xlimleft = -5
-xlimright = 305
+xlimleft = globalXMin
+xlimright = globalXLim
 ylimlower = -0.25
 ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Disk_Util.png"
+chartname="6host_228Gb_Disk_Util.eps"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -390,7 +404,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname)
+plt.savefig(chartname, format='eps')
 
-plt.show()
+#plt.show()
 plt.clf()
