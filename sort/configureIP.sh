@@ -14,9 +14,11 @@ case $hname in
     ;;
 "reactor3")
     sudo ifconfig ens1f0 192.168.1.103 netmask 255.255.255.0
+    sudo ifconfig ens2f1 172.16.1.103 netmask 255.255.255.0
     ;;
 "reactor4")
     sudo ifconfig ens1f0 192.168.1.104 netmask 255.255.255.0
+    sudo ifconfig ens2f1 172.16.1.104 netmask 255.255.255.0
     ;;
 "reactor5")
     sudo ifconfig ens1f0 192.168.1.105 netmask 255.255.255.0

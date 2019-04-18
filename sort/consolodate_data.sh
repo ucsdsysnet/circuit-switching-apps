@@ -3,7 +3,8 @@
 fortyG=40
 tenG=10
 #speed=10
-speed=40
+speed=$tenG
+speed=$fortyG
 #interface=ens1f0
 interface=ens2d1
 #echo "" > test.agg
@@ -15,7 +16,7 @@ while read LINE; do
     #Reactor7 is using a different intel nic than 6 & 8 April 16 2019
     if [[ $speed -eq $fortyG ]];then
         case $host in
-        "reactor5" | "reactor7")
+        "reactor3"| "reactor4" | "reactor5" | "reactor7")
             interface=ens2f1
             ;;
         *)
@@ -43,5 +44,6 @@ while read LINE; do
     sed -i '1s/^/time,cpu,rec,send,ram,disk\n/' ${host}.agg
     sed -i 's/\t/,/g' ${host}.agg
     sed -i 's/^,//g' ${host}.agg
+    sed -i '/,,,/d' ${host}.agg
 done < $file
 

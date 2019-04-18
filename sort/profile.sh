@@ -2,7 +2,7 @@
 
 host=`hostname`
 sample_interval=1
-number_of_samples=125
+number_of_samples=350
 
 fortyG=40
 tenG=10
@@ -17,7 +17,7 @@ network_interface=ens2d1
 
 if [[ $speed -eq $fortyG ]];then
     case $host in
-    "reactor[57]")
+    "reactor3" | "reactor4" | "reactor5" | "reactor7")
         interface=ens2f1
         ;;
     *)

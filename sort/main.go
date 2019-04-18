@@ -26,6 +26,7 @@ var (
 	WriteOutputToFile = false
 	AsyncWrite        = true
 	SPEEDTEST         = false
+	SPEEDTESTDEBUG    = true
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -37,24 +38,31 @@ var usage = "main.go hostname hosts.txt"
 var transferFilename = "/home/stew/data/medium-nothing.dat"
 
 //Size of byte buffers for reading and writing TODO this size should be larger for big sort sizes
-const BUFSIZE = 4096
 
 //The total number of integers to generate and sort per node
-//const ITEMS = 550000000
-//const ITEMS = 250000000
-const ITEMS = 100000000
+
+//This is the max on reactor at 10:90 kv's
+const ITEMS = 624000000
+
+//const ITEMS = 500000000
+
+//const ITEMS = 200000000
+
+//const ITEMS = 100000000
 
 //const ITEMS = 550000
 
 //const ITEMS = 40000
 
 //const ITEMS = 5000
-const SORTBUFSIZE = 4096
+const SORTBUFSIZE = 4096 * 2
+
+//const SORTBUFSIZE = 2048
 const SORTBUFBYTESIZE = SORTBUFSIZE * ITEMSIZE
 const SORTTHREADS = 24
 
-const SHUFFLERTHREADS = 18
-const RECTHREADS = 4
+const SHUFFLERTHREADS = 16
+const RECTHREADS = 1
 
 const RANDTHREADS = 24
 const MAXHOSTS = 6
@@ -78,16 +86,19 @@ const KILLMSGSIZE = 1
 //SLEEPS
 const READWAKETIME = 5
 const WRITEWAKETIME = 5
-const READTIMEOUT = 20
+const READTIMEOUT = 35
 
 const KEYSIZE = 10
-const VALUESIZE = 400
+const VALUESIZE = 90
+
+//const VALUESIZE = 90
 const ITEMSIZE = KEYSIZE + VALUESIZE
 
 const HOSTS6 = 6
 
 const CONSPERHOST = 3
 const PORTOFFSET = 1000
+const SHUFFLESTART = 100
 
 type Item struct {
 	Key   [KEYSIZE]byte
@@ -150,7 +161,10 @@ var toSend = make([]Item, ITEMS)
 //var toSort = make([]Item, ITEMS*BALLENCERATIO)
 var toSort = make([][]Item, SORTTHREADS)
 
+var AbsStart time.Time
+
 func main() {
+	AbsStart = time.Now()
 	log.Println("STARTING V2")
 	flag.Parse()
 	//cpu profileing
@@ -211,8 +225,8 @@ func main() {
 
 		//Alloc an array of outgoing channels to write to other hosts.
 		for i := 0; i < len(ipMap); i++ {
-			writeTo[i] = make(chan FixedSegment, 1)
-			writeDone[i] = make(chan bool, 1)
+			writeTo[i] = make(chan FixedSegment, 32)
+			writeDone[i] = make(chan bool, 32)
 		}
 
 		//Sleep so that all conections get established TODO if a single host
@@ -268,16 +282,25 @@ func main() {
 	var doneHosts int
 	log.Println("Launching a read terminating thread")
 	var doneReading chan bool
-	var tThreadSortCount = make([][]int, RECTHREADS)
+	//var tThreadSortCount = make([][]int, RECTHREADS)
 	var threadSortCount = make([]int, SORTTHREADS)
-	for i := 0; i < RECTHREADS; i++ {
-		tThreadSortCount[i] = make([]int, SORTTHREADS)
-	}
+	/*
+		for i := 0; i < RECTHREADS; i++ {
+			tThreadSortCount[i] = make([]int, SORTTHREADS)
+		}*/
 	doneReading = make(chan bool, 1)
 	var totalRead int
 	log.Println("Started Reading")
 	for i := 0; i < RECTHREADS; i++ {
-		go asyncRead(doneReading, readDone, rbufReturn, rbufReturnResponse, &doneHosts, &toSort, remoteBufCount, &tThreadSortCount[i], &totalRead, len(ipMap), indexMap[hostname])
+		go asyncRead(doneReading, readDone, rbufReturn, rbufReturnResponse, &doneHosts, &toSort, remoteBufCount, &threadSortCount, &totalRead, len(ipMap), indexMap[hostname])
+	}
+
+	for {
+		//course syncronization
+		//TODO syncronize with proper messages
+		if time.Now().Sub(AbsStart) > (time.Second * SHUFFLESTART) {
+			break
+		}
 	}
 
 	//Start Shuffling
@@ -291,12 +314,12 @@ func main() {
 		<-doneReading
 		log.Printf("Rec Thread [%d] Complete", i)
 	}
-
-	for i := 0; i < RECTHREADS; i++ {
-		for j := 0; j < SORTTHREADS; j++ {
-			threadSortCount[j] += tThreadSortCount[i][j]
-		}
-	}
+	/*
+		for i := 0; i < RECTHREADS; i++ {
+			for j := 0; j < SORTTHREADS; j++ {
+				threadSortCount[j] += tThreadSortCount[i][j]
+			}
+		}*/
 
 	//Merge local keys into one continuous chunk
 	/*
@@ -357,7 +380,7 @@ func asyncRead(
 	rbufReturn chan Segment2,
 	rbufReturnResponse chan bool,
 	doneHosts *int,
-	toSort *[][]Item,
+	toSortL *[][]Item,
 	remoteBufCount []int64,
 	threadIndex *[]int,
 	sortIndex *int,
@@ -370,6 +393,8 @@ func asyncRead(
 	readingTime := time.Now()
 	var rItems *[]Item
 	var seg Segment2
+
+	//var localThreadIndex = make([]int, len(*threadIndex))
 
 	var tQuant = (uint64((MaxUint / uint64(hosts)))) / SORTTHREADS
 	hQuant := uint64((MaxUint / uint64(hosts)))
@@ -403,7 +428,7 @@ func asyncRead(
 				rItems = (*[]Item)(unsafe.Pointer(seg.buf))
 
 				if seg.buf == nil {
-					log.Printf("nil buffer %X", seg.buf)
+					log.Printf("nil buffer %X -- LenCpy %d", seg.buf, lencpy)
 				}
 				//hash out received items to threads
 				if seg.n != SORTBUFSIZE*ITEMSIZE {
@@ -443,9 +468,13 @@ func asyncRead(
 				//copy((*toSort)[sorteeThread][(*threadIndex)[sorteeThread]:((*threadIndex)[sorteeThread]+lencpy)], rItems[:])
 
 				tLock[sorteeThread].Lock()
-				copy((*toSort)[sorteeThread][(*threadIndex)[sorteeThread]:((*threadIndex)[sorteeThread]+lencpy)], *(*[]Item)(unsafe.Pointer(seg.buf)))
+				copy((*toSortL)[sorteeThread][(*threadIndex)[sorteeThread]:((*threadIndex)[sorteeThread]+lencpy)], *(*[]Item)(unsafe.Pointer(seg.buf)))
 				//log.Printf("DoneCopy")
 				(*threadIndex)[sorteeThread] += lencpy
+				/*
+					if sorteeThread == 0 && hostid == 0 {
+						log.Println("Thread Index", (*threadIndex)[sorteeThread])
+					}*/
 				(*sortIndex) += lencpy
 				//TODO move to listening thread
 				//remoteBufCount[seg.index] += seg.n
@@ -467,7 +496,7 @@ func asyncRead(
 				readchan <- true
 				return
 			}
-			doneTimeout = time.After(time.Second)
+			doneTimeout = time.After(time.Second * 10)
 		}
 	}
 
@@ -563,7 +592,6 @@ func shuffler(data []Item,
 	var bufIndex int
 
 	//TODO kill
-	var ringallocation [HOSTS6][SORTTHREADS]int
 	<-start
 
 	//The next step forward is to keep all local data in the same buffer. To do
@@ -575,9 +603,9 @@ func shuffler(data []Item,
 	var datalen = len(data)
 	var uintkey uint64
 
-	hQuant := uint64((MaxUint / uint64(hosts)))
-	tQuant := (uint64((MaxUint / uint64(hosts)))) / SORTTHREADS
-	hostDiv := (uint64(hosts) * tQuant)
+	var hQuant = uint64((MaxUint / uint64(hosts)))
+	var tQuant = (uint64((MaxUint / uint64(hosts)))) / SORTTHREADS
+	var hostDiv = (uint64(hosts) * tQuant)
 
 	var seg Segment2
 	for i := 0; i < datalen; i++ {
@@ -594,9 +622,7 @@ func shuffler(data []Item,
 		//uintkey |= uint64(data[i].Key[7]) << 0
 
 		sorteeHost = int(uintkey / hQuant)
-		sorteeThread = int((uintkey / hostDiv))
-
-		ringallocation[sorteeHost][sorteeThread]++
+		sorteeThread = int(uintkey / hostDiv)
 
 		//log.Printf("uint key %d", uintkey)
 		/*
@@ -618,15 +644,17 @@ func shuffler(data []Item,
 
 			hostIndex[sorteeHost][sorteeThread] = 0
 			if myIndex == sorteeHost {
-				//TODO acquire a buffer fro the buffer pool
-				seg.n = -1
-				for seg.n == -1 {
-					rbufRequest <- true
-					seg = <-rbufRequestResponse
+				if !SPEEDTESTDEBUG {
+					//TODO acquire a buffer fro the buffer pool
+					seg.n = -1
+					for seg.n == -1 {
+						rbufRequest <- true
+						seg = <-rbufRequestResponse
+					}
+					//have rbuf
+					copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[myIndex][sorteeThread]))[:SORTBUFBYTESIZE])
+					readDone <- seg
 				}
-				//have rbuf
-				copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[myIndex][sorteeThread]))[:SORTBUFBYTESIZE])
-				readDone <- seg
 
 			} else {
 				//log.Printf("Writing to Host[%d][%d]", sorteeHost, sorteeThread)
@@ -710,6 +738,7 @@ func ShuffleController(totalHosts int, localSortedCounter *[]int, hostname strin
 	stopShuffle := make(chan bool, totalHosts)
 	//Inject a function here which subdivides the input and puts it into buffers for each of the respective receving hosts.
 	//Alloc channels for threads to communicate back to the main thread of execution
+
 	if SPEEDTEST {
 		time.Sleep(time.Second * 300)
 		return
@@ -837,12 +866,14 @@ func ListenRoutine(readDone chan Segment2,
 		//before sending the buffer to the receiving thread.
 
 		//TODO obtain a buffer from the buffer pool
-		if SPEEDTEST {
+		if SPEEDTEST || SPEEDTESTDEBUG {
 			seg = Segment2{buf: &speedbuf, n: SORTBUFBYTESIZE}
+			n, err = conn.Read((*seg.buf)[sortedChunkIndex:(SORTBUFBYTESIZE)])
+			continue
+
 		} else {
 			if needBuf {
-				rbufRequest <- true
-				seg = <-rbufRequestResponse
+				seg = Segment2{buf: &speedbuf, n: SORTBUFBYTESIZE}
 				if seg.bufindex == -1 {
 					//Try again if needBuf and none are available
 					continue
@@ -854,9 +885,6 @@ func ListenRoutine(readDone chan Segment2,
 
 		n, err = conn.Read((*seg.buf)[sortedChunkIndex:(SORTBUFBYTESIZE)])
 
-		if SPEEDTEST {
-			continue
-		}
 		//log.Printf("Received buf of size %d", n)
 		total += int64(n)
 
