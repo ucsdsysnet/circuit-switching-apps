@@ -6,6 +6,6 @@ for i in $(cat < hosts.txt); do
   hostname=`echo $i | cut -d ' ' -f 1`
   echo $hostname
   #TODO In the future set this with options
-  ssh $hostname "killall main; killall profile.sh; killall profile"
+  ssh $hostname "killall main; killall profile.sh; killall profile; killall sar"
   sleep 1
 done

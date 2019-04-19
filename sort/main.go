@@ -26,7 +26,9 @@ var (
 	WriteOutputToFile = false
 	AsyncWrite        = true
 	SPEEDTEST         = false
-	SPEEDTESTDEBUG    = true
+	SPEEDTESTDEBUG    = false
+	DEBUG             = false
+	PROFILE           = false
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -42,9 +44,9 @@ var transferFilename = "/home/stew/data/medium-nothing.dat"
 //The total number of integers to generate and sort per node
 
 //This is the max on reactor at 10:90 kv's
-const ITEMS = 624000000
+//const ITEMS = 624000000
 
-//const ITEMS = 500000000
+const ITEMS = 500000000
 
 //const ITEMS = 200000000
 
@@ -55,21 +57,27 @@ const ITEMS = 624000000
 //const ITEMS = 40000
 
 //const ITEMS = 5000
-const SORTBUFSIZE = 4096 * 2
+//const SORTBUFSIZE = 4096
 
 //const SORTBUFSIZE = 2048
+
+//const SORTBUFSIZE = 1028
+const BUFPAGES = 20
+const SORTBUFSIZE = (4096 * BUFPAGES) / ITEMSIZE
+
+//const SORTBUFSIZE = 512
 const SORTBUFBYTESIZE = SORTBUFSIZE * ITEMSIZE
 const SORTTHREADS = 24
 
-const SHUFFLERTHREADS = 16
-const RECTHREADS = 1
+const SHUFFLERTHREADS = 14
+const RECTHREADS = 240
 
 const RANDTHREADS = 24
 const MAXHOSTS = 6
 const BALLENCERATIO = 2
 
-const RBUFS = 128
-const RBUFCHANS = 12
+const RBUFS = 512
+const RBUFCHANS = 36
 
 //Constants for determining the largest integer value, used to ((aproximatly)) evenly hash integer values across hosts)
 const MaxUint = ^uint64(0)
@@ -98,11 +106,11 @@ const HOSTS6 = 6
 
 const CONSPERHOST = 3
 const PORTOFFSET = 1000
-const SHUFFLESTART = 100
+const SHUFFLESTART = 90
 
 type Item struct {
-	Key   [KEYSIZE]byte
 	Value [VALUESIZE]byte
+	Key   [KEYSIZE]byte
 }
 
 func (i *Item) Size() int {
@@ -162,6 +170,7 @@ var toSend = make([]Item, ITEMS)
 var toSort = make([][]Item, SORTTHREADS)
 
 var AbsStart time.Time
+var SortStart time.Time
 
 func main() {
 	AbsStart = time.Now()
@@ -231,7 +240,7 @@ func main() {
 
 		//Sleep so that all conections get established TODO if a single host
 		//does not wake up the sort breaks: develop an init protocol for safety
-		log.Printf("[%s] Sleeping for %ds to wait for other hosts to wake up", hostname, READWAKETIME)
+		//log.Printf("[%s] Sleeping for %ds to wait for other hosts to wake up", hostname, READWAKETIME)
 		time.Sleep(time.Second * READWAKETIME)
 		thisHostId := indexMap[hostname]
 
@@ -244,13 +253,15 @@ func main() {
 			for i := 0; i < CONSPERHOST; i++ {
 				remoteHostIndex := indexMap[remoteHost]
 				remotePort := ports[thisHostId][remoteHostIndex] + basePort + (i * PORTOFFSET)
-				log.Printf("remote port %d remote addr %s remoteHostIndex %d", remotePort, remoteAddr, remoteHostIndex)
 				conn, err := net.Dial("tcp4", fmt.Sprintf("%s:%d", remoteAddr, remotePort))
 				if err != nil {
 					log.Fatalf("Unable to connect to remote host %s on port %d : Error %s", remoteHost, remotePort, err)
 				}
 				defer conn.Close()
-				log.Printf("Preparing Write Channnel to Host %s, on port %d", remoteHost, remotePort)
+				if DEBUG {
+					log.Printf("remote port %d remote addr %s remoteHostIndex %d", remotePort, remoteAddr, remoteHostIndex)
+					log.Printf("Preparing Write Channnel to Host %s, on port %d", remoteHost, remotePort)
+				}
 				//Launch writing thread
 
 				go WriteRoutine2(writeTo[remoteHostIndex], writeDone[remoteHostIndex], conn)
@@ -258,7 +269,7 @@ func main() {
 		}
 	}
 
-	log.Printf("[%s] Sleeping for an additional %ds to wait for other hosts connect their writing channels", hostname, READWAKETIME)
+	//log.Printf("[%s] Sleeping for an additional %ds to wait for other hosts connect their writing channels", hostname, READWAKETIME)
 	time.Sleep(time.Second * WRITEWAKETIME)
 
 	totalHosts := len(ipMap)
@@ -267,8 +278,10 @@ func main() {
 	//Start Listening
 
 	//Start the profile after generating the random data
-	defer profile.Start().Stop()
-	profile.ProfilePath("./cpu.prof")
+	if PROFILE {
+		defer profile.Start().Stop()
+		profile.ProfilePath("./cpu.prof")
+	}
 
 	//Wait for transmission of other hosts to end, and count the number of
 	//bytes transmitted by othere hosts to perform a single decode operation
@@ -306,6 +319,7 @@ func main() {
 	//Start Shuffling
 	localSortedCounter := make([]int, SORTTHREADS)
 	log.Println("Started Shuffle")
+	SortStart = time.Now()
 	go ShuffleController(totalHosts, &localSortedCounter, hostname, indexMap, writeTo, writeDone, readDone, rbufRequest, rbufRequestResponse)
 
 	//\HASHING CODE
@@ -401,6 +415,8 @@ func asyncRead(
 	var sorteeThread int
 	var uintkey uint64
 
+	var top int
+	var bottom int
 	doneTimeout := time.After(time.Second)
 	for {
 		if !started && total > 10000 {
@@ -468,17 +484,15 @@ func asyncRead(
 				//copy((*toSort)[sorteeThread][(*threadIndex)[sorteeThread]:((*threadIndex)[sorteeThread]+lencpy)], rItems[:])
 
 				tLock[sorteeThread].Lock()
-				copy((*toSortL)[sorteeThread][(*threadIndex)[sorteeThread]:((*threadIndex)[sorteeThread]+lencpy)], *(*[]Item)(unsafe.Pointer(seg.buf)))
-				//log.Printf("DoneCopy")
+				bottom = (*threadIndex)[sorteeThread]
+				top = bottom + lencpy
 				(*threadIndex)[sorteeThread] += lencpy
-				/*
-					if sorteeThread == 0 && hostid == 0 {
-						log.Println("Thread Index", (*threadIndex)[sorteeThread])
-					}*/
 				(*sortIndex) += lencpy
 				//TODO move to listening thread
 				//remoteBufCount[seg.index] += seg.n
 				tLock[sorteeThread].Unlock()
+				//Get values in critical section then perform expensive copy outside
+				copy((*toSortL)[sorteeThread][bottom:top], *(*[]Item)(unsafe.Pointer(seg.buf)))
 
 				rbufReturn <- seg
 				<-rbufReturnResponse
@@ -584,12 +598,12 @@ func shuffler(data []Item,
 ) {
 
 	var (
-		outputBuffers [MAXHOSTS][SORTTHREADS][SORTBUFSIZE]Item
-		hostIndex     [MAXHOSTS][SORTTHREADS]int
+		outputBuffers [MAXHOSTS * SORTTHREADS][SORTBUFSIZE]Item
+		hostIndex     [MAXHOSTS * SORTTHREADS]int
 	)
 	var sorteeHost int
-	var sorteeThread int
-	var bufIndex int
+	//var bufIndex int
+	var masterIndex int
 
 	//TODO kill
 	<-start
@@ -607,13 +621,20 @@ func shuffler(data []Item,
 	var tQuant = (uint64((MaxUint / uint64(hosts)))) / SORTTHREADS
 	var hostDiv = (uint64(hosts) * tQuant)
 
+	var numerator = uint64(hosts) + (hQuant / hostDiv)
+	var denom = hQuant
+
 	var seg Segment2
 	for i := 0; i < datalen; i++ {
 
 		//TODO if this is not a bottle neck make it bigger
-		uintkey = 0
-		uintkey |= uint64(data[i].Key[0]) << 56
-		uintkey |= uint64(data[i].Key[1]) << 48
+
+		//old
+		uintkey &= 0
+		uintkey = uint64(data[i].Key[0]) << 56
+		masterIndex = int((uintkey / denom) * numerator)
+
+		//uintkey |= uint64(data[i].Key[1]) << 48
 		//uintkey |= uint64(data[i].Key[2]) << 40
 		//uintkey |= uint64(data[i].Key[3]) << 32
 		//uintkey |= uint64(data[i].Key[4]) << 24
@@ -621,8 +642,12 @@ func shuffler(data []Item,
 		//uintkey |= uint64(data[i].Key[6]) << 8
 		//uintkey |= uint64(data[i].Key[7]) << 0
 
-		sorteeHost = int(uintkey / hQuant)
-		sorteeThread = int(uintkey / hostDiv)
+		//sorteeHost = int(uintkey / hQuant)
+		//sorteeThread = int(uintkey / hostDiv)
+		//masterIndex = sorteeHost*hosts + sorteeThread
+
+		//NOTE new
+		//masterIndex = int(((uint64(data[i].Key[0]) << 56) / denom) * numerator)
 
 		//log.Printf("uint key %d", uintkey)
 		/*
@@ -636,13 +661,15 @@ func shuffler(data []Item,
 
 		//if local write back to the beginning of the data array to save memory
 
-		bufIndex = hostIndex[sorteeHost][sorteeThread]
-		outputBuffers[sorteeHost][sorteeThread][bufIndex] = data[i]
-		hostIndex[sorteeHost][sorteeThread]++
+		//bufIndex = hostIndex[masterIndex]
+		outputBuffers[masterIndex][hostIndex[masterIndex]] = data[i]
+		hostIndex[masterIndex]++
 		//Buffer full time to send
-		if hostIndex[sorteeHost][sorteeThread] == SORTBUFSIZE {
+		if hostIndex[masterIndex] == SORTBUFSIZE {
 
-			hostIndex[sorteeHost][sorteeThread] = 0
+			sorteeHost = int(uintkey / hQuant)
+
+			hostIndex[masterIndex] = 0
 			if myIndex == sorteeHost {
 				if !SPEEDTESTDEBUG {
 					//TODO acquire a buffer fro the buffer pool
@@ -652,7 +679,7 @@ func shuffler(data []Item,
 						seg = <-rbufRequestResponse
 					}
 					//have rbuf
-					copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[myIndex][sorteeThread]))[:SORTBUFBYTESIZE])
+					copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[masterIndex]))[:SORTBUFBYTESIZE])
 					readDone <- seg
 				}
 
@@ -662,7 +689,7 @@ func shuffler(data []Item,
 				//Write Remote
 				//NOTE if there is an index out of range here it is likely because there is not enough static room in the sorteeThread
 				//log.Printf("Sending remotely to Host %d thread %d from thread %d", sorteeHost, sorteeThread, threadIndex)
-				writeTo[sorteeHost] <- FixedSegment{buf: &outputBuffers[sorteeHost][sorteeThread], n: SORTBUFSIZE}
+				writeTo[sorteeHost] <- FixedSegment{buf: &outputBuffers[masterIndex], n: SORTBUFSIZE}
 				//Don't wait for the write to complete if in asyc mode
 				//TODO may be unsafe. It's proably better to have some sort of global buffer pool
 				if !AsyncWrite {
@@ -677,7 +704,7 @@ func shuffler(data []Item,
 	for i := 0; i < hosts; i++ {
 		if i == myIndex {
 			for j := 0; j < SORTTHREADS; j++ {
-				if hostIndex[i][j] == 0 {
+				if hostIndex[i*hosts+j] == 0 {
 					continue
 				}
 				seg.n = -1
@@ -685,7 +712,7 @@ func shuffler(data []Item,
 					rbufRequest <- true
 					seg = <-rbufRequestResponse
 				}
-				copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[myIndex][sorteeThread]))[:SORTBUFBYTESIZE])
+				copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[i*hosts+j]))[:SORTBUFBYTESIZE])
 				readDone <- seg
 			}
 		} else {
@@ -693,7 +720,7 @@ func shuffler(data []Item,
 				//log.Printf("Host[%d][%d] = %d", i, j, hostIndex[i][j])
 				//writeTo[i] <- FixedSegment{buf: &outputBuffers[i][j], n: hostIndex[i][j]}
 
-				if hostIndex[i][j] == 0 {
+				if hostIndex[i*hosts+j] == 0 {
 					//Don't bother writing to the shared channel
 					continue
 				}
@@ -713,7 +740,7 @@ func shuffler(data []Item,
 					}
 				*/
 
-				writeTo[i] <- FixedSegment{buf: &outputBuffers[i][j], n: SORTBUFSIZE}
+				writeTo[i] <- FixedSegment{buf: &outputBuffers[i*hosts+j], n: SORTBUFSIZE}
 				if !AsyncWrite {
 					<-doneWrite[i]
 				}
@@ -835,17 +862,17 @@ func ListenRoutine(readDone chan Segment2,
 	thisHostId := indexMap[hostname]
 	//reminder if a -> b than  b listens on ports [a][b]
 	port := ports[remoteHostIndex][thisHostId] + basePort + (PORTOFFSET * hostConnection)
-	log.Printf("Starting TCP Connection Listener On %s for remote host index %d on port %d", hostname, remoteHostIndex, port)
+	//log.Printf("Starting TCP Connection Listener On %s for remote host index %d on port %d", hostname, remoteHostIndex, port)
 	ln, err := net.Listen("tcp4", fmt.Sprintf("%s:%d", hostIpMap[hostname], port))
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Listen Complete\n")
+	//log.Printf("Listen Complete\n")
 	conn, err := ln.Accept()
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Connection Accepted\n")
+	//fmt.Printf("Connection Accepted\n")
 	defer conn.Close()
 
 	//start := time.Now()
@@ -873,7 +900,8 @@ func ListenRoutine(readDone chan Segment2,
 
 		} else {
 			if needBuf {
-				seg = Segment2{buf: &speedbuf, n: SORTBUFBYTESIZE}
+				rbufRequest <- true
+				seg = <-rbufRequestResponse
 				if seg.bufindex == -1 {
 					//Try again if needBuf and none are available
 					continue
@@ -888,6 +916,14 @@ func ListenRoutine(readDone chan Segment2,
 		//log.Printf("Received buf of size %d", n)
 		total += int64(n)
 
+		//Here we contract the ammount that we want to send on the next itteration if we did not receive enough
+		sortedChunkIndex += n
+		if sortedChunkIndex != (SORTBUFSIZE * ITEMSIZE) {
+			//log.Printf("Sortedchunk != SORTBUFSIZE -> %d != %d", sortedChunkIndex, SORTBUFSIZE*ITEMSIZE)
+			//We still want to receive more so contine and receive again with a smaller buffer
+			continue
+		}
+
 		if detectTCPClose(conn) {
 			seg.n = -1
 			readDone <- seg
@@ -900,13 +936,6 @@ func ListenRoutine(readDone chan Segment2,
 			break //TODO the key control break, relies on getting a tcp timeout
 		}
 
-		//Here we contract the ammount that we want to send on the next itteration if we did not receive enough
-		sortedChunkIndex += n
-		if sortedChunkIndex != (SORTBUFSIZE * ITEMSIZE) {
-			//log.Printf("Sortedchunk != SORTBUFSIZE -> %d != %d", sortedChunkIndex, SORTBUFSIZE*ITEMSIZE)
-			//We still want to receive more so contine and receive again with a smaller buffer
-			continue
-		}
 		//Now we have enough that we know the chunk is sorted and ready for
 		//a given thread so reset for the next sorted chunk and pass the
 		//buffer on.
@@ -1055,6 +1084,7 @@ func (a DirRange) Less(i, j int) bool {
 
 //BufferPoolImplementation
 var poolResources [RBUFS]bool
+var last int
 
 func rbufpool(request chan bool, requestResponse chan Segment2, ret chan Segment2, retResponse chan bool) {
 	for i := range poolResources {
@@ -1086,10 +1116,12 @@ func get() int {
 	//TODO perhaps walk forward on gets like a ring buffer so that the same
 	//memory is not being hammered back and forth.
 
-	for i := range poolResources {
-		if poolResources[i] == true {
-			poolResources[i] = false
-			return i
+	for i := 0; i < len(poolResources); i++ {
+		modindex := (i + last) % len(poolResources)
+		if poolResources[modindex] == true {
+			poolResources[modindex] = false
+			last = modindex
+			return modindex
 		}
 	}
 	return -1
