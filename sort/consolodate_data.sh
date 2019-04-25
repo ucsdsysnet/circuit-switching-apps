@@ -5,6 +5,15 @@ tenG=10
 #speed=10
 speed=$tenG
 speed=$fortyG
+
+
+reactor="reactor"
+b09="b09"
+
+rack=$reactor
+rack=$b09
+
+
 #interface=ens1f0
 interface=ens2d1
 #echo "" > test.agg
@@ -14,19 +23,26 @@ while read LINE; do
     host=`echo $LINE | cut -d ' ' -f 1`
     #fix interface names
     #Reactor7 is using a different intel nic than 6 & 8 April 16 2019
-    if [[ $speed -eq $fortyG ]];then
-        case $host in
-        "reactor3"| "reactor4" | "reactor5" | "reactor7")
-            interface=ens2f1
-            ;;
-        *)
-            interface=ens2d1
-            ;;
-        esac
-    elif [[ $speed -eq $tenG ]]; then
-        interface=ens1f0
+
+    if [[ $rack -eq $reactor ]]; then
+        if [[ $speed -eq $fortyG ]];then
+            case $host in
+            "reactor3" | "reactor4" | "reactor5" | "reactor7")
+                interface=ens2f1
+                ;;
+            *)
+                interface=ens2d1
+                ;;
+            esac
+        elif [[ $speed -eq $tenG ]]; then
+            interface=ens1f0
+        else
+            echo "Speed and host unknown exiting"
+        fi
+    elif [[ $rack -eq $b09 ]]; then
+        interface=enp101s0
     else
-        echo "Speed and host unknown exiting"
+        echo "rack $rack unknown"
     fi
     
     echo $host $interface

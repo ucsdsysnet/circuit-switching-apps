@@ -39,6 +39,32 @@ case $hname in
 "reactor9")
     sudo ifconfig ens1f0 192.168.1.109 netmask 255.255.255.0
     ;;
+##b09 nodes
+"b09-30")
+    sudo ifconfig enp101s0 192.168.1.130 netmask 255.255.255.0
+    ;;
+"b09-32")
+    sudo ifconfig enp101s0 192.168.1.132 netmask 255.255.255.0
+    ;;
+"b09-34")
+    sudo ifconfig enp101s0 192.168.1.134 netmask 255.255.255.0
+    ;;
+"b09-36")
+    sudo ifconfig enp101s0 192.168.1.136 netmask 255.255.255.0
+    ;;
+"b09-38")
+    sudo ifconfig enp101s0 192.168.1.138 netmask 255.255.255.0
+    ;;
+"b09-40")
+    sudo ifconfig enp101s0 192.168.1.140 netmask 255.255.255.0
+    ;;
+"b09-42")
+    sudo ifconfig enp101s0 192.168.1.142 netmask 255.255.255.0
+    ;;
+"b09-44")
+    sudo ifconfig enp101s0 192.168.1.144 netmask 255.255.255.0
+    ;;
+
 *)
     echo "hostname >>> " $hname " <<< unknown to configuration script"
 esac

@@ -6,8 +6,16 @@ number_of_samples=350
 
 fortyG=40
 tenG=10
+
+reactor="reactor"
+b09="b09"
 #speed=10
-speed=40
+speed=$tenG
+speed=$fortyG
+
+rack=$reactor
+rack=$b09
+
 #interface=ens1f0
 interface=ens2d1
 #echo "" > test.agg
@@ -15,19 +23,25 @@ interface=ens2d1
 #network_interface=ens1f0
 network_interface=ens2d1
 
-if [[ $speed -eq $fortyG ]];then
-    case $host in
-    "reactor3" | "reactor4" | "reactor5" | "reactor7")
-        interface=ens2f1
-        ;;
-    *)
-        interface=ens2d1
-        ;;
-    esac
-elif [[ $speed -eq $tenG ]]; then
-    interface=ens1f0
+if [[ $rack -eq $reactor ]]; then
+    if [[ $speed -eq $fortyG ]];then
+        case $host in
+        "reactor3" | "reactor4" | "reactor5" | "reactor7")
+            interface=ens2f1
+            ;;
+        *)
+            interface=ens2d1
+            ;;
+        esac
+    elif [[ $speed -eq $tenG ]]; then
+        interface=ens1f0
+    else
+        echo "Speed and host unknown exiting"
+    fi
+elif [[ $rack -eq $b09 ]]; then
+    interface=enp101s0
 else
-    echo "Speed and host unknown exiting"
+    echo "rack $rack unknown"
 fi
 
 sar -r $sample_interval $number_of_samples > data/${host}_ram.dat &

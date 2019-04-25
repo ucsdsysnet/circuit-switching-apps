@@ -101,7 +101,7 @@ xlimright = globalXLim
 ylimlower = -3
 ylimupper = 100
 
-chartname="6host_228Gb_cpu.eps"
+chartname="6host_228Gb_cpu.png"
 
 # calculate 99th percentile
 for filename in sys.argv:
@@ -139,7 +139,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname, format='eps')
+plt.savefig(chartname, format='png')
 #plt.show()
 plt.clf()
 
@@ -166,7 +166,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_TX_Bytes.eps"
+chartname="6host_228Gb_TX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -208,7 +208,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname, format='eps')
+plt.savefig(chartname, format='png')
 
 #plt.show()
 
@@ -235,7 +235,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_RX_Bytes.eps"
+chartname="6host_228Gb_RX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -277,7 +277,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname, format='eps')
+plt.savefig(chartname, format='png')
 
 #plt.show()
 plt.clf()
@@ -304,7 +304,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Memory_Usage.eps"
+chartname="6host_228Gb_Memory_Usage.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -340,7 +340,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname, format='eps')
+plt.savefig(chartname, format='png')
 
 #plt.show()
 plt.clf()
@@ -368,7 +368,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Disk_Util.eps"
+chartname="6host_228Gb_Disk_Util.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -404,7 +404,7 @@ plt.ylabel(ylabel)
 
 plt.xlim(left=xlimleft,right=xlimright)
 plt.ylim(bottom=ylimlower,top=ylimupper)
-plt.savefig(chartname, format='eps')
+plt.savefig(chartname, format='png')
 
 #plt.show()
 plt.clf()

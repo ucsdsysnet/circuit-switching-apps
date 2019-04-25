@@ -74,7 +74,7 @@ const RECTHREADS = 1
 
 const RANDTHREADS = 24
 const MAXHOSTS = 6
-const BALLENCERATIO = 2
+const BALLENCERATIO = 4
 
 const RBUFS = 16
 const RBUFCHANS = 36
@@ -159,7 +159,7 @@ var tLock = make([]sync.Mutex, SORTTHREADS)
 var rbufs [][]byte
 
 //base port all others are offset from this by hostid * hosts + hostid
-var basePort = 11400
+var basePort = 11600
 
 //All generated integers, some will be sent, some are sorted locally
 var toSend = make([]Item, ITEMS)
@@ -229,6 +229,8 @@ func main() {
 			writeDone[i][j] = make(chan bool, 3)
 		}
 	}
+
+	var threadSortCount = make([]int, SORTTHREADS)
 	if ConnectToPeers {
 		//Launch TCP listening threads for each other host (one way tcp for ease)
 		for remoteHost, remoteIndex := range indexMap {
@@ -237,7 +239,7 @@ func main() {
 				continue
 			}
 			for i := 0; i < SORTTHREADS; i++ {
-				go ListenRoutine(readDone, remoteIndex, hostname, ipMap, indexMap, ports, i, rbufRequest, rbufRequestResponse)
+				go ListenRoutine(readDone, remoteIndex, hostname, ipMap, indexMap, ports, i, &threadSortCount, rbufRequest, rbufRequestResponse)
 			}
 		}
 
@@ -299,7 +301,6 @@ func main() {
 	log.Println("Launching a read terminating thread")
 	var doneReading chan bool
 	//var tThreadSortCount = make([][]int, RECTHREADS)
-	var threadSortCount = make([]int, SORTTHREADS)
 	/*
 		for i := 0; i < RECTHREADS; i++ {
 			tThreadSortCount[i] = make([]int, SORTTHREADS)
@@ -433,6 +434,7 @@ func asyncRead(
 			if seg.n == -1 {
 				recBufLock.Lock()
 				(*doneHosts)++
+                log.Printf("Total Hosts reported done %d",*doneHosts)
 				recBufLock.Unlock()
 			} else {
 
@@ -676,6 +678,9 @@ func shuffler(data []Item,
 
 			sorteeHost = int(uintkey / hQuant)
 			sorteeThread = int(uintkey/tQuant) / hosts
+			sorteeThread = int((uint64(uintkey) - uint64(uint64(sorteeHost) * hQuant)) / tQuant)
+            //log.Printf("uintkey %d sub %d",uintkey, (uint64(sorteeHost) * hQuant))
+            //log.Println(sorteeThread)
 
 			hostIndex[masterIndex] = 0
 			if myIndex == sorteeHost {
@@ -708,7 +713,7 @@ func shuffler(data []Item,
 		}
 	}
 
-	log.Println("DRAINING BUFFERS")
+	//log.Println("DRAINING BUFFERS")
 	//Drain remaining buffers
 	for i := 0; i < hosts; i++ {
 		if i == myIndex {
@@ -822,7 +827,8 @@ func ShuffleController(totalHosts int,
 
 //Async write routine. Don't be fooled by the simplicity this is complicated.
 //Each routine is pinned to a TCP connection. Upon reciving a segment on an
-//async channel this function writes a region of memory referenced by the
+//async channel this function writes a regi{
+//on of memory referenced by the
 //segment to indexed host.
 func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Conn) {
 	var seg FixedSegment
@@ -869,6 +875,7 @@ func ListenRoutine(readDone chan Segment2,
 	indexMap map[string]int,
 	ports [][]int,
 	hostConnection int,
+    threadCounter *[]int,
 	rbufRequest chan bool,
 	rbufRequestResponse chan Segment2) {
 
@@ -898,9 +905,12 @@ func ListenRoutine(readDone chan Segment2,
 	conn.SetReadDeadline(time.Now().Add(10000 * time.Second))
 	//var sortedChunkIndex = 0
 
-	var needBuf = true
+	//var needBuf = true
 	var seg Segment2
 
+    var baseOffset = 0
+    var ittBaseOffset = 0
+    var completeRecBuf = 1
 	//var speedbuf = make([]byte, SORTBUFBYTESIZE)
 	for {
 
@@ -911,37 +921,62 @@ func ListenRoutine(readDone chan Segment2,
 		//based on threads however we want to receive exactly SORTBUFSIZE
 		//before sending the buffer to the receiving thread.
 
-		//TODO obtain a buffer from the buffer pool
-		if SPEEDTEST || SPEEDTESTDEBUG {
-			//n, err = conn.Read((*seg.buf)[sortedChunkIndex:(SORTBUFBYTESIZE)])
-			//log.Printf("Total %d, len = %d, max = %d", n, len(toSort[hostConnection]), len(toSort[hostConnection])*ITEMSIZE)
-			//log.Printf("Len unsafe %d", len((*(*[]byte)(unsafe.Pointer(&toSort[hostConnection])))))
-			//log.Printf("Receving on %d @ %d", hostConnection, total)
-			n, err = conn.Read(toSort[hostConnection][total:])
-			//n, err = conn.Read((*(*[]byte)(unsafe.Pointer(&toSort[hostConnection])))[total:])
-			//n, err = conn.Read((*(*[]byte)(unsafe.Pointer(&toSort[hostConnection])))[total:(len(toSort[hostConnection]))])
-			//n, err = conn.Read((*(*[]byte)(unsafe.Pointer(&(toSort[hostConnection]))))[total:(SORTBUFBYTESIZE * ((ITEMS * BALLENCERATIO) / SORTTHREADS))])
-			total += int64(n)
-			if total == int64(len(toSort[hostConnection])) {
-				log.Println("Breaking")
-				break
-			}
+            //Obtain and increment reciving offset
+           
+            //tLock[hostConnection].Lock()
+            //baseOffset = (*threadCounter)[hostConnection]
+            
+            baseOffset = (completeRecBuf * remoteHostIndex) * SORTBUFBYTESIZE
+            ittBaseOffset = baseOffset
+            completeRecBuf++
+            //(*threadCounter)[hostConnection] += SORTBUFBYTESIZE
+            //tLock[hostConnection].Unlock()
+
+            for ittBaseOffset < baseOffset + SORTBUFBYTESIZE {
+                n, err = conn.Read(toSort[hostConnection][ittBaseOffset:(baseOffset + SORTBUFBYTESIZE)])
+                ittBaseOffset += n
+                total += int64(n)
+                if n == 0 {
+                    log.Println("(Zero n) total %d : n = %d : host %d ",total,n, remoteHostIndex)
+                    break
+                }
+
+            }
+            if n == 0 {
+                log.Println("(Zero n [outerloop] host id %d) total %d ",total, remoteHostIndex)
+                //break
+            }
+
+            //if hostConnection == 1 && thisHostId == 1 {
+            /*
+                for i := 0; i < SORTTHREADS ;i ++ {
+                    tLock[i].Lock()
+                    log.Printf("thread %d, rec %d ",i,(*threadCounter)[i])
+                    tLock[i].Unlock()
+                }
+            */
+            //}
+
+            if detectTCPClose(conn) {
+                seg.n = -1
+                readDone <- seg
+                //give buf away
+                break
+            }
+
+            if err != nil {
+                log.Println(err)
+                break //TODO the key control break, relies on getting a tcp timeout
+            }
+
+            if total == int64(len(toSort[hostConnection])) {
+                log.Println("Breaking")
+                break
+            }
 			//seg = Segment2{buf: &speedbuf, n: SORTBUFBYTESIZE}
 			//n, err = conn.Read((*seg.buf)[sortedChunkIndex:(SORTBUFBYTESIZE)])
 			//continue
 
-		} else {
-			if needBuf {
-				rbufRequest <- true
-				seg = <-rbufRequestResponse
-				if seg.bufindex == -1 {
-					//Try again if needBuf and none are available
-					continue
-				} else {
-					needBuf = false
-				}
-			}
-		}
 
 		//Here we contract the ammount that we want to send on the next itteration if we did not receive enough
 		/*
@@ -952,17 +987,6 @@ func ListenRoutine(readDone chan Segment2,
 				continue
 			}*/
 
-		if detectTCPClose(conn) {
-			seg.n = -1
-			readDone <- seg
-			//give buf away
-			break
-		}
-
-		if err != nil {
-			log.Println(err)
-			break //TODO the key control break, relies on getting a tcp timeout
-		}
 
 		//Now we have enough that we know the chunk is sorted and ready for
 		//a given thread so reset for the next sorted chunk and pass the
@@ -977,6 +1001,11 @@ func ListenRoutine(readDone chan Segment2,
 		*/
 
 	}
+
+    tLock[hostConnection].Lock()
+    (*threadCounter)[hostConnection] += int(total)
+    tLock[hostConnection].Unlock()
+
 	seg.n = -1
 	readDone <- seg
 }
