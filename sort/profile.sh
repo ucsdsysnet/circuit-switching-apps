@@ -59,3 +59,5 @@ sar -w $sample_interval $number_of_samples > data/${host}_proc.dat &
 sar -n DEV $sample_interval $number_of_samples > data/${host}_netinterface.dat &
 # Sockets
 sar -n SOCK $sample_interval $number_of_samples  > data/${host}_sockets.dat &
+# Power
+

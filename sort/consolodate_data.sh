@@ -7,8 +7,8 @@ speed=$tenG
 speed=$fortyG
 
 
-reactor="reactor"
-b09="b09"
+reactor='reactor'
+b09='b09'
 
 rack=$reactor
 rack=$b09
@@ -24,8 +24,8 @@ while read LINE; do
     #fix interface names
     #Reactor7 is using a different intel nic than 6 & 8 April 16 2019
 
-    if [[ $rack -eq $reactor ]]; then
-        if [[ $speed -eq $fortyG ]];then
+    if [[ $rack == $reactor ]]; then
+        if [[ $speed == $fortyG ]];then
             case $host in
             "reactor3" | "reactor4" | "reactor5" | "reactor7")
                 interface=ens2f1
@@ -39,7 +39,7 @@ while read LINE; do
         else
             echo "Speed and host unknown exiting"
         fi
-    elif [[ $rack -eq $b09 ]]; then
+    elif [[ $rack == $b09 ]]; then
         interface=enp101s0
     else
         echo "rack $rack unknown"
@@ -61,5 +61,6 @@ while read LINE; do
     sed -i 's/\t/,/g' ${host}.agg
     sed -i 's/^,//g' ${host}.agg
     sed -i '/,,,/d' ${host}.agg
+    sed -i '/^0.00/d' ${host}.agg
 done < $file
 

@@ -28,7 +28,7 @@ var (
 	SPEEDTEST         = false
 	SPEEDTESTDEBUG    = true
 	DEBUG             = false
-	PROFILE           = false
+	PROFILE           = true
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -62,18 +62,21 @@ const ITEMS = 500000000
 //const SORTBUFSIZE = 2048
 
 //const SORTBUFSIZE = 1028
-const BUFPAGES = 20
+const REALCORES = 40
+const CORES = 2
+const BUFPAGES = 4 //2
 const SORTBUFSIZE = (4096 * BUFPAGES) / ITEMSIZE
 
 //const SORTBUFSIZE = 512
 const SORTBUFBYTESIZE = SORTBUFSIZE * ITEMSIZE
-const SORTTHREADS = 24
+const SORTTHREADS = CORES
 
-const SHUFFLERTHREADS = 14
+const SHUFFLERTHREADS = CORES * 1.5
+//const SHUFFLERTHREADS = CORES *1.5
 const RECTHREADS = 1
 
-const RANDTHREADS = 24
-const MAXHOSTS = 6
+const RANDTHREADS = REALCORES
+const MAXHOSTS = 8
 const BALLENCERATIO = 4
 
 const RBUFS = 16
@@ -94,7 +97,7 @@ const KILLMSGSIZE = 1
 //SLEEPS
 const READWAKETIME = 5
 const WRITEWAKETIME = 5
-const READTIMEOUT = 35
+const READTIMEOUT = 30
 
 const KEYSIZE = 10
 const VALUESIZE = 90
@@ -102,11 +105,9 @@ const VALUESIZE = 90
 //const VALUESIZE = 90
 const ITEMSIZE = KEYSIZE + VALUESIZE
 
-const HOSTS6 = 6
 
-const CONSPERHOST = 3
 const PORTOFFSET = 1000
-const SHUFFLESTART = 75
+const SHUFFLESTART = 40
 
 type Item struct {
 	Value [VALUESIZE]byte
@@ -182,6 +183,8 @@ func main() {
 	args := os.Args[1:]
 	//Parse arguments
 	hostname := args[0]
+
+    log.Println("hostname")
 	//Generate a map of hostnames -> ip and hostname -> host index // TODO this is slow index with arrays in the future
 	ipMap, indexMap := parseHosts(args[1])
 
@@ -590,7 +593,7 @@ doneWrite - Used to signal that a write is complete (may compromise safty when a
 
 */
 func shuffler(data []Item,
-	localSortIndexRef *int,
+	localSortIndexRef *[]int,
 	hosts int,
 	threadIndex int,
 	myIndex int,
@@ -628,10 +631,11 @@ func shuffler(data []Item,
 
 	var hQuant = uint64((MaxUint / uint64(hosts)))
 	var tQuant = (uint64((MaxUint / uint64(hosts)))) / SORTTHREADS
-	var hostDiv = (uint64(hosts) * tQuant)
+	//var hostDiv = (uint64(hosts) * tQuant)
 
-	var numerator = uint64(hosts) + (hQuant / hostDiv)
-	var denom = hQuant
+	//var numerator = uint64(hosts) + (hQuant / hostDiv)
+	//var denom = hQuant
+    //log.Println(numerator,denom,hostDiv,tQuant,hQuant)
 
 	var seg Segment2
 	for i := 0; i < datalen; i++ {
@@ -641,7 +645,14 @@ func shuffler(data []Item,
 		//old
 		uintkey &= 0
 		uintkey = uint64(data[i].Key[0]) << 56
-		masterIndex = int((uintkey / denom) * numerator)
+		uintkey |= uint64(data[i].Key[1]) << 48
+		uintkey |= uint64(data[i].Key[2]) << 40
+
+        sorteeHost = int(uintkey / hQuant)
+	    sorteeThread = int((uint64(uintkey) - uint64(uint64(sorteeHost) * hQuant)) / tQuant)
+		masterIndex = int(sorteeHost * SORTTHREADS + sorteeThread)
+
+		//masterIndex = int((uintkey / denom) * numerator)
 
 		//uintkey |= uint64(data[i].Key[1]) << 48
 		//uintkey |= uint64(data[i].Key[2]) << 40
@@ -671,14 +682,15 @@ func shuffler(data []Item,
 		//if local write back to the beginning of the data array to save memory
 
 		//bufIndex = hostIndex[masterIndex]
+        //log.Printf("hostIndex %s",hostIndex)
+        //log.Printf("masterIndex %d", masterIndex)
 		outputBuffers[masterIndex][hostIndex[masterIndex]] = data[i]
 		hostIndex[masterIndex]++
 		//Buffer full time to send
 		if hostIndex[masterIndex] == SORTBUFSIZE {
 
-			sorteeHost = int(uintkey / hQuant)
-			sorteeThread = int(uintkey/tQuant) / hosts
-			sorteeThread = int((uint64(uintkey) - uint64(uint64(sorteeHost) * hQuant)) / tQuant)
+			//sorteeHost = int(uintkey / hQuant)
+			//sorteeThread = int((uint64(uintkey) - uint64(uint64(sorteeHost) * hQuant)) / tQuant)
             //log.Printf("uintkey %d sub %d",uintkey, (uint64(sorteeHost) * hQuant))
             //log.Println(sorteeThread)
 
@@ -690,7 +702,7 @@ func shuffler(data []Item,
 					for seg.n == -1 {
 						rbufRequest <- true
 						seg = <-rbufRequestResponse
-					}
+					} //TODO local sort index Ref++
 					//have rbuf
 					copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[masterIndex]))[:SORTBUFBYTESIZE])
 					readDone <- seg
@@ -718,7 +730,7 @@ func shuffler(data []Item,
 	for i := 0; i < hosts; i++ {
 		if i == myIndex {
 			for j := 0; j < SORTTHREADS; j++ {
-				if hostIndex[i*hosts+j] == 0 {
+				if hostIndex[i*(SORTTHREADS)+j] == 0 {
 					continue
 				}
 				seg.n = -1
@@ -726,15 +738,15 @@ func shuffler(data []Item,
 					rbufRequest <- true
 					seg = <-rbufRequestResponse
 				}
-				copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[i*hosts+j]))[:SORTBUFBYTESIZE])
+				copy((*seg.buf)[:], (*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(&outputBuffers[i*(SORTTHREADS)+j]))[:SORTBUFBYTESIZE])
 				readDone <- seg
 			}
 		} else {
 			for j := 0; j < SORTTHREADS; j++ {
 				//log.Printf("Host[%d][%d] = %d", i, j, hostIndex[i][j])
 				//writeTo[i] <- FixedSegment{buf: &outputBuffers[i][j], n: hostIndex[i][j]}
-
-				if hostIndex[i*hosts+j] == 0 {
+                //log.Println(i*(SORTTHREADS)+j)
+				if hostIndex[i*(SORTTHREADS)+j] == 0 {
 					//Don't bother writing to the shared channel
 					continue
 				}
@@ -754,7 +766,7 @@ func shuffler(data []Item,
 					}
 				*/
 
-				writeTo[i][j] <- FixedSegment{buf: &outputBuffers[i*hosts+j], n: SORTBUFSIZE}
+				writeTo[i][j] <- FixedSegment{buf: &outputBuffers[i*(SORTTHREADS)+j], n: SORTBUFSIZE}
 				if !AsyncWrite {
 					<-doneWrite[i][j]
 				}
@@ -798,7 +810,7 @@ func ShuffleController(totalHosts int,
 		chunksize := (len(toSend) / SHUFFLERTHREADS)
 		min := i * chunksize
 		max := (i + 1) * chunksize
-		go shuffler(toSend[min:max], &((*localSortedCounter)[i]), totalHosts, i, indexMap[hostname], startShuffle, stopShuffle, writeTo, writeDone, readDone, rbufRequest, rbufRequestResponse)
+		go shuffler(toSend[min:max], localSortedCounter, totalHosts, i, indexMap[hostname], startShuffle, stopShuffle, writeTo, writeDone, readDone, rbufRequest, rbufRequestResponse)
 	}
 	//HASHING CODE
 	//fmt.Printf("Passing over %s of data to hash to hosts\n", totaldata())
@@ -923,27 +935,28 @@ func ListenRoutine(readDone chan Segment2,
 
             //Obtain and increment reciving offset
            
-            //tLock[hostConnection].Lock()
-            //baseOffset = (*threadCounter)[hostConnection]
+            tLock[hostConnection].Lock()
+            baseOffset = (*threadCounter)[hostConnection]
             
-            baseOffset = (completeRecBuf * remoteHostIndex) * SORTBUFBYTESIZE
+            //baseOffset = (completeRecBuf * remoteHostIndex) * SORTBUFBYTESIZE
             ittBaseOffset = baseOffset
             completeRecBuf++
-            //(*threadCounter)[hostConnection] += SORTBUFBYTESIZE
-            //tLock[hostConnection].Unlock()
+            (*threadCounter)[hostConnection] += SORTBUFBYTESIZE
+            tLock[hostConnection].Unlock()
 
             for ittBaseOffset < baseOffset + SORTBUFBYTESIZE {
                 n, err = conn.Read(toSort[hostConnection][ittBaseOffset:(baseOffset + SORTBUFBYTESIZE)])
                 ittBaseOffset += n
                 total += int64(n)
                 if n == 0 {
-                    log.Println("(Zero n) total %d : n = %d : host %d ",total,n, remoteHostIndex)
+                    //log.Println("(Zero n) total %d : n = %d : host %d ",total,n, remoteHostIndex)
                     break
                 }
+	            //conn.SetReadDeadline(time.Now().Add(time.Second))
 
             }
             if n == 0 {
-                log.Println("(Zero n [outerloop] host id %d) total %d ",total, remoteHostIndex)
+                //log.Println("(Zero n [outerloop] host id %d) total %d ",total, remoteHostIndex)
                 //break
             }
 

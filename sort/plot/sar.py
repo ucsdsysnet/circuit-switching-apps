@@ -78,7 +78,7 @@ reckbytesindex=3
 ramindex=4
 diskindex=5
 
-color = ['b','r','c','k', 'm', 'g']
+color = ['b','r','c','k', 'm', 'g', 'y', '#008000']
 linetype = ['g-','g--','g-+']
 cindex=0
 lindex=2
