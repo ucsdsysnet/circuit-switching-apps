@@ -1,0 +1,35 @@
+Switch IP: 172.19.222.79
+User: root
+Password: <Ask>
+
+(Init)
+cd bf-sde-8.2.0/
+bash ./set_sde.bash #shows the location of the SD
+
+(Check what's running)
+cd ../opera
+bfshell
+pd<tab>, whatever is in tab is the program
+exit
+
+(load switch program)
+(Open driver screen)
+screen -r driver
+exit
+exit
+Ctrl + C
+./run_switchd.sh -p <program> (l3 or fattree)
+bfshell> ucli
+
+(activating ports)
+pm
+port-add -/- 10G NONE
+port-enb -/-
+
+#detach screen ctrl A d 
+
+(loading tables)
+./run_pd_rpc.py -p l3 l3_tables.py
+./run_pd_rpc.py -p fattree fattree_tables.py
+
+(don't use "exit" to get off the driver screen: only type Ctrl + A + D)

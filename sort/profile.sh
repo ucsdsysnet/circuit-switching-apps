@@ -2,7 +2,7 @@
 
 host=`hostname`
 sample_interval=1
-number_of_samples=350
+number_of_samples=150
 
 fortyG=40
 tenG=10

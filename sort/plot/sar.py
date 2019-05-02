@@ -51,17 +51,17 @@ def KbpsToGbps(tput):
 
 
 sys.argv.pop(0)
-print str(sys.argv)
-
-plt.rcParams.update({'font.size': 30})
+#print str(sys.argv)
+titlePrefix="228GB Sort 8 Hosts"
+plt.rcParams.update({'font.size': 42})
 
 #plot the latencies of each individual measure
 color=iter(cm.rainbow(np.linspace(0,1,5*(len(sys.argv) + 1))))
 c=next(color)
 
 
-globalXLim = 205
-globalXMin = -5
+globalXLim = 130
+globalXMin = -1
 
 networkingYmax = 42
 ############################################################################
@@ -79,29 +79,43 @@ ramindex=4
 diskindex=5
 
 color = ['b','r','c','k', 'm', 'g', 'y', '#008000']
+color = [
+    '#e6194B'
+    ,'#f58231'
+    ,'#bfef45'
+    ,'#3cb44b'
+    ,'#42d4f4'
+    ,'#4363d8'
+    ,'#911eb4'
+    ,'#000000']
 linetype = ['g-','g--','g-+']
 cindex=0
 lindex=2
 
 #parameters
 figx=30
-figy=10
+figy=12
 dpi=80
 figure(num=None, figsize=(figx, figy), dpi=dpi, facecolor='w', edgecolor='k')
 
 xlabel="Seconds"
 ylabel="CPU utilization"
-title="228Gb Sort 6 Hosts CPU utilization"
+title=titlePrefix+ " CPU utilization"
 
 xlegendanchor=0.50
-ylegendanchor=-0.40
+ylegendanchor=-0.56
 
 xlimleft = globalXMin
 xlimright = globalXLim
 ylimlower = -3
-ylimupper = 100
+ylimupper = 103
 
-chartname="6host_228Gb_cpu.png"
+
+tlayx0=0.03
+tlayy0=0.22
+tlayx1=1
+tlayy1=1
+chartname="8host_228GB_cpu.png"
 
 # calculate 99th percentile
 for filename in sys.argv:
@@ -124,15 +138,15 @@ for filename in sys.argv:
                 data.append(float(row[cpuindex]))
         ntime = normalizeTime(time)
         i=i+1
-        plt.plot(ntime, data, linetype[lindex], label=finalname , color=color[cindex], linewidth=2)
+        plt.plot(ntime, data, linetype[lindex], label=finalname , color=color[cindex], linewidth=5)
         cindex=cindex+1
         time =[]
         data = []
         total = []
 
-lgd = plt.legend(ncol=3,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
+lgd = plt.legend(ncol=4,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
 plt.grid('on')
-plt.tight_layout(rect=(0,-.03,1,1))
+plt.tight_layout(rect=(tlayx0,tlayy0,tlayx1,tlayy1))
 plt.title(title)
 plt.xlabel(xlabel)
 plt.ylabel(ylabel)
@@ -147,17 +161,15 @@ plt.clf()
 #                           Network TX Bytes
 #######################################################################################
 #parameters
-figx=30
-figy=10
-dpi=80
 figure(num=None, figsize=(figx, figy), dpi=dpi, facecolor='w', edgecolor='k')
 
 xlabel="Seconds"
 ylabel="Network Throughput (Gbps)"
-title="228Gb Sort 6 Hosts Network Throughput TX Bytes"
+title=titlePrefix+" Network Throughput TX Bytes"
 
-xlegendanchor=0.50
-ylegendanchor=-0.40
+#xlegendanchor=0.50
+#ylegendanchor=-0.40
+
 
 xlimleft = globalXMin
 xlimright = globalXLim
@@ -166,7 +178,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_TX_Bytes.png"
+chartname="8host_228GB_TX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -187,7 +199,7 @@ for filename in sys.argv:
                 if row[sendkbytesindex] == "":
                     data.append(0.0)
                 else:
-                    print(row[sendkbytesindex])
+                    #print(row[sendkbytesindex])
                     data.append(float(row[sendkbytesindex]))
 
         ntime = normalizeTime(time)
@@ -199,9 +211,9 @@ for filename in sys.argv:
         data = []
         total = []
 
-lgd = plt.legend(ncol=3,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
+lgd = plt.legend(ncol=4,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
 plt.grid('on')
-plt.tight_layout(rect=(0,-.03,1,1))
+plt.tight_layout(rect=(tlayx0,tlayy0,tlayx1,tlayy1))
 plt.title(title)
 plt.xlabel(xlabel)
 plt.ylabel(ylabel)
@@ -216,17 +228,12 @@ plt.savefig(chartname, format='png')
 #######################################################################################
 #                           Network RX Bytes
 #######################################################################################
-figx=30
-figy=10
-dpi=80
 figure(num=None, figsize=(figx, figy), dpi=dpi, facecolor='w', edgecolor='k')
 
 xlabel="Seconds"
 ylabel="Network Throughput (Gbps)"
-title="228Gb Sort 6 Hosts Network Throughput RX Bytes"
+title=titlePrefix+" Network Throughput RX Bytes"
 
-xlegendanchor=0.50
-ylegendanchor=-0.40
 
 xlimleft = globalXMin
 xlimright = globalXLim
@@ -235,7 +242,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="6host_228Gb_RX_Bytes.png"
+chartname="8host_228GB_RX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -257,7 +264,7 @@ for filename in sys.argv:
                 if row[reckbytesindex] == "":
                     data.append(0.0)
                 else:
-                    print(row[reckbytesindex])
+                    #print(row[reckbytesindex])
                     data.append(float(row[reckbytesindex]))
         ntime = normalizeTime(time)
         gbps = KbpsToGbps(data)
@@ -268,9 +275,9 @@ for filename in sys.argv:
         data = []
         total = []
 
-lgd = plt.legend(ncol=3,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
+lgd = plt.legend(ncol=4,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
 plt.grid('on')
-plt.tight_layout(rect=(0,-.03,1,1))
+plt.tight_layout(rect=(tlayx0,tlayy0,tlayx1,tlayy1))
 plt.title(title)
 plt.xlabel(xlabel)
 plt.ylabel(ylabel)
@@ -285,17 +292,12 @@ plt.clf()
 #######################################################################################
 #                           Memory Usage
 #######################################################################################
-figx=30
-figy=10
-dpi=80
 figure(num=None, figsize=(figx, figy), dpi=dpi, facecolor='w', edgecolor='k')
 
 xlabel="Seconds"
-ylabel="Memory Utilization % (126GB/host)"
-title="228Gb Sort 6 Hosts Network Memory Usage"
+ylabel="Memory Utilization"
+title=titlePrefix+ " Network Memory Usage"
 
-xlegendanchor=0.50
-ylegendanchor=-0.40
 
 xlimleft = globalXMin
 xlimright = globalXLim
@@ -304,7 +306,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Memory_Usage.png"
+chartname="8host_228GB_Memory_Usage.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -331,9 +333,9 @@ for filename in sys.argv:
         data = []
         total = []
 
-lgd = plt.legend(ncol=3,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
+lgd = plt.legend(ncol=4,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
 plt.grid('on')
-plt.tight_layout(rect=(0.02,-.05,1,1))
+plt.tight_layout(rect=(tlayx0,tlayy0,tlayx1,tlayy1))
 plt.title(title)
 plt.xlabel(xlabel)
 plt.ylabel(ylabel)
@@ -349,17 +351,12 @@ plt.clf()
 #######################################################################################
 #                           Disk Usage
 #######################################################################################
-figx=30
-figy=10
-dpi=80
 figure(num=None, figsize=(figx, figy), dpi=dpi, facecolor='w', edgecolor='k')
 
 xlabel="Seconds"
-ylabel="Disk Utilization GBps"
-title="228Gb Sort 6 Hosts Disk Utilization"
+ylabel="Disk Utilization"
+title=titlePrefix+" Disk Utilization"
 
-xlegendanchor=0.50
-ylegendanchor=-0.40
 
 xlimleft = globalXMin
 xlimright = globalXLim
@@ -368,7 +365,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="6host_228Gb_Disk_Util.png"
+chartname="8host_228GB_Disk_Util.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -395,9 +392,9 @@ for filename in sys.argv:
         data = []
         total = []
 
-lgd = plt.legend(ncol=3,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
+lgd = plt.legend(ncol=4,loc="lower center",bbox_to_anchor=(xlegendanchor,ylegendanchor))
 plt.grid('on')
-plt.tight_layout(rect=(0,-.03,1,1))
+plt.tight_layout(rect=(tlayx0,tlayy0,tlayx1,tlayy1))
 plt.title(title)
 plt.xlabel(xlabel)
 plt.ylabel(ylabel)
