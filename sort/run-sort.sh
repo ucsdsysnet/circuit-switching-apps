@@ -1,7 +1,7 @@
 #!/bin/bash
 
-measuretimerapl=130
-measuretimePU=130
+measuretimerapl=110
+measuretimePU=110
 
 source ~/.bashrc
 source /home/ssgrant/.bashrc

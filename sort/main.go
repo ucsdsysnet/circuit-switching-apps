@@ -16,16 +16,21 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+    "github.com/wantonsolutions/circuit-switching-apps/sort/lib"
+    //"runtime/debug"
+    //"github.com/twotwotwo/sorts"
 )
 
 var (
 	//Configuration parameters
-	PerformSort      = true
+	PerformSort       = true
 	ConnectToPeers    = true
 	WriteOutputToFile = false
 	AsyncWrite        = true
 	SPEEDTEST         = false
 	PROFILE           = true
+    RADIX             = false
+    LocalSort         = false
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -34,16 +39,19 @@ var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var usage = "main.go hostname hosts.txt"
 
 //The total number of integers to generate and sort per node
-
 //This is the max on 128GB machines at 10:90 kv's
 //const ITEMS = 620000000
+
 //This is a practial number which allows for nearly full memory on 128GB machines
-const ITEMS = 500000000
+const TITEMS = 100000
+const ITEMS = TITEMS
+const ITEMS = 600000000
+//const ITEMS = 500000000
+//const ITEMS = 450000000
+//const ITEMS = 300000000
 
 const TOTALCORES = 40
 const SHUFFLECORES = 4
-const BUFPAGES = 4
-const SORTBUFSIZE = (4096 * BUFPAGES) / ITEMSIZE
 
 const SORTBUFBYTESIZE = SORTBUFSIZE * ITEMSIZE
 const SORTTHREADS = TOTALCORES
@@ -54,7 +62,7 @@ const RECTHREADS = 1
 
 const RANDTHREADS = TOTALCORES
 const MAXHOSTS = 8
-const BALLENCERATIO = 1.5
+const BALLENCERATIO = 1.2
 
 
 //Constants for determining the largest integer value, used to ((aproximatly))
@@ -77,11 +85,6 @@ const READTIMEOUT = 30
 //As the name would suggest this is the tcp read timeout after shuffle has begun
 const READTIMEOUTSHUFFLESTARTED = 1
 
-const KEYSIZE = 10
-const VALUESIZE = 90
-
-//const VALUESIZE = 90
-const ITEMSIZE = KEYSIZE + VALUESIZE
 
 //Each host has SORTTHREAD connections with each other host. Each connection is
 //offset by PORTOFFSET
@@ -91,50 +94,17 @@ const PORTOFFSET = 1000
 //Absolute time to begin the shuffle operation (~30s for 128 GB machines)
 const SHUFFLESTART = 30
 // Set to 74 for 10G, and X for 40G
-const SORTSTART = 74
-//const SORTSTART = 43
+//const SORTSTART = 74
+const SORTSTART = 44
 
-type Item struct {
-	Value [VALUESIZE]byte
-	Key   [KEYSIZE]byte
-}
 
-func (i *Item) Size() int {
-	return len(i.Key) + len(i.Value)
-}
-
-func (i *Item) String() string {
-	return fmt.Sprintf("Key[%X]:Value[%X]", i.Key, i.Value)
-}
-
-/* The segement type is used to index into buffers. Reads and Writes from
-* buffers are done using segments as a means to determing the offset and
-* howmuch to write. The index variable relates to the hosts index buffer which
-* will be read or written to. Segments are used (preemtivly) for performance
-* purposes so that mulliple reads and writes can be batched into contiguous
-* segements. Segemnts are passed along channels so that read / writes can be
-* done asyncronsouly without blocking*/
-//NOTE Second itteration. There is no need to do anything with offsets, or
-//indexes. It does not matter who sent the data, all that matters is the thread
-//that it is going to.
-//TODO Segment has been largely deprecated and is barely used except to signal
-//that a channel is done reading.
-type Segment struct {
-	n        int64
-}
-
-//Fixed segments are preallocated structs of data used for copying to the network.
-type FixedSegment struct {
-	buf *[SORTBUFSIZE]Item
-	n   int
-}
 
 var recBufLock sync.Mutex
 
 var tLock = make([]sync.Mutex, SORTTHREADS)
 
 //base port all others are offset from this by hostid * hosts + hostid
-var basePort = 11600
+var basePort = 11800
 
 //All generated integers, some will be sent, some are sorted locally
 var toSend = make([]Item, ITEMS)
@@ -147,10 +117,15 @@ var toSort = make([][]byte, SORTTHREADS)
 //Abs start begins at the beginning of the sort and is used to calculagte
 //absolute timeouts.
 var AbsStart time.Time
+var ShuffleStart time.Time
 //Sort start is used to start sorting at an absolute time.
 var SortStart time.Time
 
 var shuffleStarted = false
+var sortStarted = false
+
+var threadSortCount []int
+var indexArrs = make([][]uint32, len(toSort))
 
 func main() {
 	AbsStart = time.Now()
@@ -200,7 +175,7 @@ func main() {
     //hosts. threadSortCount is also used to determine at which offset a given
     //receiving thread should writ to the ToSort array. Currently all access to
     //threadSortCount is protected by the tLock array.
-	var threadSortCount = make([]int, SORTTHREADS)
+	threadSortCount = make([]int, SORTTHREADS)
 
 	if ConnectToPeers {
 		//Launch TCP listening threads for each other host (one way tcp for ease)
@@ -245,6 +220,10 @@ func main() {
 	totalHosts := len(ipMap)
 	GenRandomController(totalHosts)
 
+    if LocalSort {
+        LocalSortTest(toSend)
+        return
+    }
 	//Start Listening
 
 	//Start the profile after generating the random data
@@ -275,13 +254,14 @@ func main() {
 		//course syncronization
 		//TODO syncronize with proper messages
 		if time.Since(AbsStart) > (time.Second * SHUFFLESTART) {
+            shuffleStarted = true
+            ShuffleStart = time.Now()
 			break
 		}
 	}
 
 	//Start Shuffling
 	log.Println("Started Shuffle")
-	SortStart = time.Now()
 	go ShuffleController(totalHosts, &threadSortCount, hostname, indexMap, writeTo, writeDone, readDone)
 
 
@@ -290,25 +270,22 @@ func main() {
 		//course syncronization
 		//TODO syncronize with proper messages
 		if time.Since(AbsStart) > (time.Second * SORTSTART) {
+            sortStarted = true
+            log.Println("Starting Sort!!")
+	        SortStart = time.Now()
 			break
 		}
 	}
-    if false {
-        //\HASHING CODE
-        shuffleStarted = true
-        for i := 0; i < RECTHREADS; i++ {
-            <-doneReading
-            log.Printf("Rec Thread [%d] Complete", i)
-        }
-    }
 
 	if PerformSort {
 		startSorting := make(chan bool, 1)
 		stopSorting := make(chan bool, 1)
-		log.Println("Starting Sort!!")
-		SortController(&toSort, threadSortCount, startSorting, stopSorting)
-		log.Println("Sort Complete!!!")
+        //debug.SetGCPercent(-1)
+		SortController(&toSort, &threadSortCount, startSorting, stopSorting)
+        
+		log.Println("Sort Complete")
 	}
+	log.Printf("\nShuf %d \nSort %d \nFull %d", SortStart.Sub(ShuffleStart), time.Since(SortStart), time.Since(ShuffleStart))
 
 	if WriteOutputToFile {
 		log.Println("Writing to file")
@@ -317,11 +294,19 @@ func main() {
 	}
 }
 
-func SortController(toSort *[][]byte, threadRanges []int, sortStart chan bool, sortDone chan bool) {
+func SortController(toSort *[][]byte, threadRanges *[]int, sortStart chan bool, sortDone chan bool) {
     var itempointer *[]Item
+    for i := 0;i < len(*toSort); i++ {
+        size := ((*threadRanges)[i]/ITEMSIZE)
+        indexArrs[i] = make([]uint32, size)
+        for j := 0; j < len(indexArrs[i]); j++ {
+            indexArrs[i][j] = uint32(j)
+        }
+    }
 	for i := 0; i < SORTTHREADS; i++ {
         itempointer = (*[]Item)(unsafe.Pointer(&((*toSort)[i])))
-		go Sorter((*itempointer)[0:(threadRanges[i]/ITEMSIZE)], sortStart, sortDone)
+        log.Println((*threadRanges)[i])
+		go Sorter((*itempointer)[0:((*threadRanges)[i]/ITEMSIZE)], sortStart, sortDone,indexArrs[i])
 	}
 	for i := 0; i < SORTTHREADS; i++ {
 		sortStart <- true
@@ -329,11 +314,27 @@ func SortController(toSort *[][]byte, threadRanges []int, sortStart chan bool, s
 	for i := 0; i < SORTTHREADS; i++ {
 		<-sortDone
 	}
+    /*
+	for i := 0; i < SORTTHREADS; i++ {
+        log.Printf("done tr - > %d", (*threadRanges)[i])
+    }*/
+    //btmp := make([]byte,ITEMSIZE)
+    for j := 0; j< len(indexArrs[0]); j++ {
+        //a := (indexArrs[0][j])
+        //log.Printf("a: %d",a)
+        //btmp = (*toSort)[0][(a*ITEMSIZE):((a*ITEMSIZE)+ITEMSIZE)]
+        //btmp = (*toSort)[0][(j*ITEMSIZE):((j*ITEMSIZE)+ITEMSIZE)]
+        //log.Printf("%s",(*(*Item)(unsafe.Pointer(&btmp))).String())
+        //log.Println((*toSort)[0][(j*ITEMSIZE):((j*ITEMSIZE)+ITEMSIZE)])
+    }
+    //log.Println(indexArrs[0])
+    print((*toSort)[rand.Int()%1][rand.Int()%1])
 }
 
-func Sorter(toSort []Item, sortStart chan bool, sortDone chan bool) {
+func Sorter(tosort []Item, sortStart chan bool, sortDone chan bool, indexArrsl []uint32) {
 	<-sortStart
-	sort.Sort(DirRange(toSort))
+    log.Printf("ToSort Len (Sorter -- %d)", len(tosort))
+	sort.Sort(DirRange{items: &tosort, ints: &indexArrsl})
 	sortDone <- true
 }
 
@@ -385,15 +386,6 @@ func asyncRead(
 
 }
 
-func randomize(data []Item, r *rand.Rand, start, stop chan bool) {
-	var datalen = len(data)
-	<-start
-	for i := 0; i < datalen; i++ {
-		r.Read(data[i].Key[:])
-		r.Read(data[i].Value[:])
-	}
-	stop <- true
-}
 
 func GenRandomController(totalHosts int) {
 	log.Printf("Total Hosts %d", totalHosts)
@@ -409,7 +401,7 @@ func GenRandomController(totalHosts int) {
 		min := i * chunksize
 		max := (i + 1) * chunksize
 		threadRand := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
-		go randomize(toSend[min:max], threadRand, randStart, randStop)
+		go Randomize(toSend[min:max], threadRand, randStart, randStop)
 	}
 	for i := 0; i < RANDTHREADS; i++ {
 		randStart <- true
@@ -625,9 +617,16 @@ func WriteRoutine2(writeTo chan FixedSegment, doneWriting chan bool, conn net.Co
         }
 
 		_, err = conn.Write((*[SORTBUFBYTESIZE]byte)(unsafe.Pointer(seg.buf))[:seg.n*ITEMSIZE])
-		if err != nil {
-			log.Fatal(err)
-		}
+		if err != nil  && !sortStarted {
+            //log.Println("Warning sort started too early to exit due to write fatality!")
+            //log.Println(err)
+			//log.Fatal(err)
+		} else if err != nil  && sortStarted{
+            conn.Close()
+            return
+        }
+
+        
 		if !AsyncWrite {
 			doneWriting <- true
 		}
@@ -844,23 +843,29 @@ func totaldataVal() int {
 	return (ITEMS * ITEMSIZE * 8) / (1024 * 1024)
 }
 
-type DirRange []Item
 
-func (a DirRange) Len() int { return len(a) }
-func (a DirRange) Swap(i, j int) {
-	for k := range a[i].Key {
-		a[i].Key[k], a[j].Key[k] = a[j].Key[k], a[i].Key[k]
-	}
-	for k := range a[i].Value {
-		a[i].Value[k], a[j].Value[k] = a[j].Value[k], a[i].Value[k]
-	}
+func LocalSortTest(toSort []Item) {
+    startchan := make(chan int, LOCALSORTTHREAD * 2)
+    for i := 0; i < LOCALSORTTHREAD; i++ {
+        go BoundedSorter(startchan, toSort)
+    }
+
+    for i := 0; i < len(toSort); i+=SORTBOUND {
+        startchan <- i
+    }
+    time.Sleep(time.Second * 2)
+
 }
-func (a DirRange) Less(i, j int) bool {
-    //var k int
-    //var length = len(a[i].Key)
-    var ival uint64
-    var jval uint64
-    ival = *(*uint64)(unsafe.Pointer(&a[i].Key))
-    jval = *(*uint64)(unsafe.Pointer(&a[j].Key))
-    return ival < jval
+
+const LOCALSORTTHREAD = 40
+const SORTBOUND = 4096
+
+func BoundedSorter(start chan int, toSort []Item) {
+    for {
+        s := <- start
+        if s == -1 {
+            return
+        }
+	    sort.Sort(DirRange2(toSort[s:(s+SORTBOUND)]))
+    }
 }
