@@ -40,7 +40,13 @@ while read LINE; do
             echo "Speed and host unknown exiting"
         fi
     elif [[ $rack == $b09 ]]; then
-        interface=enp101s0
+
+        case $host in
+        *)
+            interface=enp59s0
+            ;;
+        esac
+
     else
         echo "rack $rack unknown"
     fi
@@ -62,5 +68,6 @@ while read LINE; do
     sed -i 's/^,//g' ${host}.agg
     sed -i '/,,,/d' ${host}.agg
     sed -i '/^0.00/d' ${host}.agg
+    #head -n -2 ${host}.agg
 done < $file
 

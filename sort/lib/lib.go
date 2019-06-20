@@ -2,7 +2,7 @@ package lib
 
 import (
     "fmt"
-    "log"
+//    "log"
     "unsafe"
     "math/rand"
 )
@@ -25,24 +25,51 @@ func (i *Item) Size() int {
 }
 
 func (i *Item) String() string {
-	return fmt.Sprintf("Key[%X]:Value[%X]", i.Key, i.Value)
+    /*
+	s := fmt.Sprintf("Key[")
+    for j := range i.Key {
+        s += fmt.Sprintf("%x,",i.Key[j])
+    }
+	s += fmt.Sprintf("]:Value[")
+    for j := range i.Value {
+        s += fmt.Sprintf("%x,",i.Value[j])
+    }
+    s += fmt.Sprintf("]")
+    return se(
+    */
+    
+    return fmt.Sprintf("Key[%X] Value[%X]",i.Key, i.Value)
 }
 
 type DirRange2 []Item
 
 type DirRange struct{
-    items *[]Item
-    ints *[]uint32
+   Items *[]Item
+    Ints *[]uint32
 }
+
+type DirRange3 struct {
+    Ints *[]uint32
+    Keys *[][KEYSIZE]byte
+}
+
 
 
 func Randomize(data []Item, r *rand.Rand, start, stop chan bool) {
 	var datalen = len(data)
+    var randItem Item
+    r.Read(randItem.Value[0:VALUESIZE])
 	<-start
+    //fmt.Printf("Data Length %d\n",datalen)
+    //fmt.Printf("Modified len %d\n", datalen*ITEMSIZE)
+    //r.Read((*itembuf)[0:datalen])
 	for i := 0; i < datalen; i++ {
-		r.Read(data[i].Key[:])
-		r.Read(data[i].Value[:])
+		r.Read(data[i].Key[0:KEYSIZE])
+		data[i].Value = randItem.Value
 	}
+    //var itembuf *[]byte
+    //itembuf = (*[]byte)(unsafe.Pointer(&data))
+    //r.Read((*itembuf)[0:datalen])
 	stop <- true
 }
 
@@ -59,13 +86,13 @@ func Randomize(data []Item, r *rand.Rand, start, stop chan bool) {
 //TODO Segment has been largely deprecated and is barely used except to signal
 //that a channel is done reading.
 type Segment struct {
-	n        int64
+	N        int64
 }
 
 //Fixed segments are preallocated structs of data used for copying to the network.
 type FixedSegment struct {
-	buf *[SORTBUFSIZE]Item
-	n   int
+	Buf *[SORTBUFSIZE]Item
+	N   int
 }
 
 
@@ -93,92 +120,84 @@ func (a DirRange2) Less(i, j int) bool {
 
 
 func (a DirRange) Key(i int) uint64 { 
-    return *(*uint64)(unsafe.Pointer(&(*a.items)[i].Key))
+    return *(*uint64)(unsafe.Pointer(&(*a.Items)[i].Key))
 }
 
-func (a DirRange) Len() int { return len(*a.items) }
+func (a DirRange) Len() int { 
+    if len(*a.Ints) < len(*a.Items) {
+        return len(*a.Ints)
+    } else {
+        return len(*a.Items)
+    }
+}
 func (a DirRange) Swap(i, j int) {
-    /*
-    var ival uint64
-    var jval uint64
-    ival = *(*uint64)(unsafe.Pointer(&(*a.items)[i].Key))
-    jval = *(*uint64)(unsafe.Pointer(&(*a.items)[j].Key))
-    ival, jval = jval, ival
-    */
-    (*a.ints)[i], (*a.ints)[j] = (*a.ints)[j], (*a.ints)[i]
-    /*
-	for k := range a[i].Key {
-		a[i].Key[k], a[j].Key[k] = a[j].Key[k], a[i].Key[k]
-	}
-    */
-	//for k := range a[i].Value {
-	//	a[i].Value[k], a[j].Value[k] = a[j].Value[k], a[i].Value[k]
-	//}
+    (*a.Ints)[i], (*a.Ints)[j] = (*a.Ints)[j], (*a.Ints)[i]
 }
 
 const compsize = 8
 
 func (a DirRange) Less(i, j int) bool {
-    var ival uint64
-    var jval uint64
     
     var ib *[KEYSIZE]byte
     var jb *[KEYSIZE]byte
-    
-    //var base = 0
+    ib = &(*a.Items)[(*a.Ints)[i]].Key
+    jb = &(*a.Items)[(*a.Ints)[j]].Key
+    return Less(ib, jb)
 
-    ib = &(*a.items)[(*a.ints)[i]].Key
-    jb = &(*a.items)[(*a.ints)[j]].Key
-    
-    ival |= uint64((*ib)[0]) << uint64(0)
-    ival |= uint64((*ib)[1]) << uint64(8)
-    ival |= uint64((*ib)[2]) << uint64(16)
-    ival |= uint64((*ib)[3]) << uint64(24)
+}
 
-    ival |= uint64((*ib)[4]) << uint64(32)
-    ival |= uint64((*ib)[5]) << uint64(40)
-    ival |= uint64((*ib)[6]) << uint64(48)
-    ival |= uint64((*ib)[7]) << uint64(56)
+func (a DirRange3) Len() int {
+    if len(*a.Ints) < len(*a.Keys) {
+        return len(*a.Ints)
+    } else {
+        return len(*a.Keys)
+    }
+}
 
-    jval |= uint64((*jb)[0]) << uint64(0)
-    jval |= uint64((*jb)[1]) << uint64(8)
-    jval |= uint64((*jb)[2]) << uint64(16)
-    jval |= uint64((*jb)[3]) << uint64(24)
+func (a DirRange3) Swap(i, j int) {
+    (*a.Ints)[i], (*a.Ints)[j] = (*a.Ints)[j], (*a.Ints)[i]
+}
 
-    jval |= uint64((*jb)[4]) << uint64(32)
-    jval |= uint64((*jb)[5]) << uint64(40)
-    jval |= uint64((*jb)[6]) << uint64(48)
-    jval |= uint64((*jb)[7]) << uint64(56)
+func (a DirRange3) Less(i, j int) bool {
+    var ib *[KEYSIZE]byte
+    var jb *[KEYSIZE]byte
+    ib = &(*a.Keys)[(*a.Ints)[i]]
+    jb = &(*a.Keys)[(*a.Ints)[j]]
+    return Less(ib, jb)
 
-    if ival == jval {
-        for i := 8; i < KEYSIZE; i ++ {
-            if (*ib)[i] == (*jb)[i] {
-                log.Fatal("Miss Matched EQ")
-            }
+}
+
+func Less(ib, jb  *[KEYSIZE]byte) bool {
+    var ival uint64
+    var jval uint64
+
+    ival |= uint64((*ib)[7]) << uint64(0)
+    ival |= uint64((*ib)[6]) << uint64(8)
+    ival |= uint64((*ib)[5]) << uint64(16)
+    ival |= uint64((*ib)[4]) << uint64(24)
+    ival |= uint64((*ib)[3]) << uint64(32)
+    ival |= uint64((*ib)[2]) << uint64(40)
+    ival |= uint64((*ib)[1]) << uint64(48)
+    ival |= uint64((*ib)[0]) << uint64(56)
+
+    jval |= uint64((*jb)[7]) << uint64(0)
+    jval |= uint64((*jb)[6]) << uint64(8)
+    jval |= uint64((*jb)[5]) << uint64(16)
+    jval |= uint64((*jb)[4]) << uint64(24)
+    jval |= uint64((*jb)[3]) << uint64(32)
+    jval |= uint64((*jb)[2]) << uint64(40)
+    jval |= uint64((*jb)[1]) << uint64(48)
+    jval |= uint64((*jb)[0]) << uint64(56)
+
+    if ival != jval {
+        return ival < jval
+    } else {
+        //Else do the rest
+        ival = uint64((*ib)[8]) << uint64(0)
+        ival = uint64((*ib)[9]) << uint64(8)
+        jval |= uint64((*jb)[8]) << uint64(0)
+        jval |= uint64((*jb)[9]) << uint64(8)
+        return ival < jval
     }
 
-//Abs start begins at the beginning of the sort and is use
-            /*
-            log.Printf("%d - %d",i,j)
-            log.Printf("Key[%d] = %x", i,(*a.items)[i].Key[:])
-            log.Printf("Key[%d] = %x", j,(*a.items)[j].Key[:])
-            log.Printf("Key[(*a.ints)[%d]] = %x", i, (*a.items)[(*a.ints)[i]].Key[:])
-            log.Printf("Key[(*a.ints)[%d]] = %x", j, (*a.items)[(*a.ints)[j]].Key[:])
-            log.Printf(" ival %d , jval  %d", ival, jval)
-            log.Printf(" ib %x , jb  %x", ib, jb)
-        }
-    //    }
-    */
-    }
-    return ival < jval
-
-    /*
-    var k int
-    for k=0;k<KEYSIZE;k++{
-        if uint8((*a.items)[i].Key[k]) != uint8((*a.items)[j].Key[k]) {
-            return uint8((*a.items)[i].Key[k]) < uint8((*a.items)[j].Key[k])
-        }
-    }*/
-    //return true
-    
 }

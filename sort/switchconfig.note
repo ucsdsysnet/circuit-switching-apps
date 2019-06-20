@@ -1,6 +1,6 @@
 Switch IP: 172.19.222.79
 User: root
-Password: <Ask>
+Password: yiadAighFic1
 
 (Init)
 cd bf-sde-8.2.0/
@@ -14,7 +14,7 @@ exit
 
 (load switch program)
 (Open driver screen)
-screen -r driver
+screen -r driver # if not working # screen -rd driver
 exit
 exit
 Ctrl + C
@@ -33,3 +33,8 @@ port-enb -/-
 ./run_pd_rpc.py -p fattree fattree_tables.py
 
 (don't use "exit" to get off the driver screen: only type Ctrl + A + D)
+
+In case the switch gets detached
+screen -S driver
+cd $SDE
+./run_switchd.sh -p l3

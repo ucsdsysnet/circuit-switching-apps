@@ -29,12 +29,22 @@ if [[ $rack -eq $reactor ]]; then
         "reactor3" | "reactor4" | "reactor5" | "reactor7")
             interface=ens2f1
             ;;
+        "b10-29" | "b10-31")
+            interface=enp175s0
+            ;;
+        "b10-29.sysnet.ucsd.edu" | "b10-31.sysnet.ucsd.edu")
+            interface=enp175s0
+            ;;
         *)
             interface=ens2d1
             ;;
         esac
     elif [[ $speed -eq $tenG ]]; then
-        interface=ens1f0
+        case $host in
+        *)
+            interface=enp59s0
+            ;;
+        esac
     else
         echo "Speed and host unknown exiting"
     fi

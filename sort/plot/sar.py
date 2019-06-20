@@ -52,7 +52,7 @@ def KbpsToGbps(tput):
 
 sys.argv.pop(0)
 #print str(sys.argv)
-titlePrefix="228GB Sort 8 Hosts"
+titlePrefix="640GB sort - Duel Socket Priority Memory"
 plt.rcParams.update({'font.size': 42})
 
 #plot the latencies of each individual measure
@@ -60,7 +60,7 @@ color=iter(cm.rainbow(np.linspace(0,1,5*(len(sys.argv) + 1))))
 c=next(color)
 
 
-globalXLim = 130
+globalXLim = 160
 globalXMin = -1
 
 networkingYmax = 42
@@ -87,7 +87,10 @@ color = [
     ,'#42d4f4'
     ,'#4363d8'
     ,'#911eb4'
-    ,'#000000']
+    ,'#000000'
+    , 'b'
+    , 'r']
+
 linetype = ['g-','g--','g-+']
 cindex=0
 lindex=2
@@ -115,7 +118,7 @@ tlayx0=0.03
 tlayy0=0.22
 tlayx1=1
 tlayy1=1
-chartname="8host_228GB_cpu.png"
+chartname="8host_360GB_cpu.png"
 
 # calculate 99th percentile
 for filename in sys.argv:
@@ -178,7 +181,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="8host_228GB_TX_Bytes.png"
+chartname="8host_360GB_TX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -242,7 +245,7 @@ ylimupper = networkingYmax
 
 cindex=0
 
-chartname="8host_228GB_RX_Bytes.png"
+chartname="8host_360GB_RX_Bytes.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -306,7 +309,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="8host_228GB_Memory_Usage.png"
+chartname="8host_360GB_Memory_Usage.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
@@ -365,7 +368,7 @@ ylimupper = 105
 
 cindex=0
 
-chartname="8host_228GB_Disk_Util.png"
+chartname="8host_360GB_Disk_Util.png"
 # calculate 99th percentile
 for filename in sys.argv:
     with open(filename,'r') as csvfile:
